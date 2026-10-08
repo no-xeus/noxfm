@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/noxfm-proto", "crates/noxfm-core", "crates/noxd", "crates/noxfm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+noxfm-proto = { path = "crates/noxfm-proto" }
+noxfm-core = { path = "crates/noxfm-core" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+
+[workspace.dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+rev = "60ad2cc4c33d7500aba557cd9150e6938d72d5a1"
+default-features = false
+features = ["winit", "tokio", "wayland", "wgpu", "multi-window"]

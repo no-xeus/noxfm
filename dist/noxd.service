@@ -1,0 +1,12 @@
+[Unit]
+Description=noxfm file manager daemon (indexing, mounts, transfers)
+Documentation=file:///usr/share/doc/noxfm/install.md
+
+[Service]
+ExecStart=/usr/bin/noxd
+Restart=on-failure
+# Windows it opens get the display from the client that asked (see
+# Hello::display_env), so starting before the graphical session is fine.
+
+[Install]
+WantedBy=default.target
