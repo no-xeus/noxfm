@@ -8,6 +8,8 @@ pub struct Supervisor {
     socket: PathBuf,
     /// Display variables last reported by a client (see `Hello::display_env`).
     display_env: std::sync::Mutex<Vec<(String, String)>>,
+    /// Children this process started and waits for.
+    spawned: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<i32>>>,
     bin_dir: Option<PathBuf>,
     /// Off in tests, so they don't open windows.
     enabled: bool,
@@ -17,7 +19,7 @@ impl Supervisor {
     /// Child binaries are looked up next to the running `noxd` first, then on `$PATH`.
     pub fn new(socket: PathBuf) -> Self {
         let bin_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        Supervisor { socket, bin_dir, enabled: true, display_env: Default::default() }
+        Supervisor { socket, bin_dir, enabled: true, display_env: Default::default(), spawned: Default::default() }
     }
 
     pub fn headless(socket: PathBuf) -> Self {
@@ -48,14 +50,26 @@ impl Supervisor {
             .spawn()?;
         let pid = child.id();
         tracing::info!(?path, ?pid, "spawned child");
+        let spawned = self.spawned.clone();
+        if let Some(p) = pid {
+            spawned.lock().unwrap().insert(p as i32);
+        }
         tokio::spawn(async move {
             match child.wait().await {
                 Ok(status) if !status.success() => tracing::warn!(?pid, %status, "child exited"),
                 Ok(_) => tracing::debug!(?pid, "child exited"),
                 Err(e) => tracing::warn!(?pid, %e, "wait failed"),
             }
+            if let Some(p) = pid {
+                spawned.lock().unwrap().remove(&(p as i32));
+            }
         });
         Ok(())
+    }
+
+    /// Whether this process started `pid` (and so already waits for it).
+    pub fn owns(&self, pid: i32) -> bool {
+        self.spawned.lock().unwrap().contains(&pid)
     }
 
     /// Remembers a client's display variables for the windows we open.

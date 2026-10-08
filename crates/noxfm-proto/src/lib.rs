@@ -19,6 +19,16 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// even when nobody remembered to bump [`PROTOCOL_VERSION`].
 pub const SCHEMA: &str = env!("NOXFM_SCHEMA");
 
+/// The release, from the workspace `Cargo.toml`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The exact source revision this was built from (`git describe`).
+pub const GIT_REVISION: &str = env!("NOXFM_GIT");
+
+/// `noxd 0.1.0 (v0.1.0-3-g1a2b3c4)`
+pub fn version_line(program: &str) -> String {
+    format!("{program} {VERSION} ({GIT_REVISION})")
+}
+
 /// Env var the daemon sets on spawned children.
 pub const SOCKET_ENV: &str = "NOXFM_SOCKET";
 

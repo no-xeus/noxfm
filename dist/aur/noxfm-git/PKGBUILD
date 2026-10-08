@@ -1,24 +1,14 @@
-# Builds the package from this checkout, as it is (committed or not):
-#   cd dist/arch && makepkg -si
-# The version comes from git, e.g. 0.1.0.r3.g1a2b3c4 = 3 commits after
-# tag v0.1.0, so every new build installs as an upgrade.
-# For a package built from GitHub instead, see dist/aur/noxfm-git.
-pkgname=noxfm
+# Maintainer: no-xeus <noxkre@gmail.com>
+# AUR package: builds the latest commit of https://github.com/no-xeus/noxfm
+pkgname=noxfm-git
+_pkgname=noxfm
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='File manager with a background daemon: live sizes, recent files, drive mounting, tabs'
 arch=('x86_64' 'aarch64')
+url='https://github.com/no-xeus/noxfm'
 license=('MIT OR Apache-2.0')
-depends=(
-  'udisks2'            # drives, partitions, mounting
-  'polkit'             # mount permissions (rule shipped below)
-  'wayland'
-  'libxkbcommon'
-  'vulkan-icd-loader'  # wgpu rendering; falls back to software otherwise
-  'fontconfig'
-  'gcc-libs'
-  'glibc'
-)
+depends=('udisks2' 'polkit' 'wayland' 'libxkbcommon' 'vulkan-icd-loader' 'fontconfig' 'gcc-libs' 'glibc')
 makedepends=('cargo' 'git')
 optdepends=(
   'ffmpeg: video thumbnails'
@@ -28,50 +18,44 @@ optdepends=(
   'hyprpolkitagent: password prompts for actions the noxfm polkit rule does not cover'
   'adwaita-icon-theme: icons when your theme lacks some'
 )
+provides=("$_pkgname")
+conflicts=("$_pkgname")
 install=noxfm.install
 options=('!lto' '!debug')
-
-# The sources are the checkout this PKGBUILD lives in.
-_root="$startdir/../.."
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
 
 pkgver() {
-  cd "$_root"
-  local release
-  release=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-  if git describe --tags --match 'v*' >/dev/null 2>&1; then
-    # v0.1.0-3-g1a2b3c4 -> 0.1.0.r3.g1a2b3c4
-    git describe --long --tags --match 'v*' --abbrev=7 | sed 's/^v//; s/\([^-]*-g\)/r\1/; s/-/./g'
-  else
-    printf '%s.r%s.g%s' "$release" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
-  fi
+  cd "$_pkgname"
+  # v0.1.0-3-g1a2b3c4 -> 0.1.0.r3.g1a2b3c4
+  git describe --long --tags --match 'v*' --abbrev=7 | sed 's/^v//; s/\([^-]*-g\)/r\1/; s/-/./g'
 }
 
 prepare() {
-  cd "$_root"
+  cd "$_pkgname"
   export CARGO_TARGET_DIR="$srcdir/target"
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
 }
 
 build() {
-  cd "$_root"
+  cd "$_pkgname"
   export CARGO_TARGET_DIR="$srcdir/target" RUSTUP_TOOLCHAIN=stable
   cargo build --frozen --release -p noxd -p noxfm
 }
 
 check() {
-  cd "$_root"
+  cd "$_pkgname"
   export CARGO_TARGET_DIR="$srcdir/target" RUSTUP_TOOLCHAIN=stable
-  # The fast, self-contained suites (no GUI).
   cargo test --frozen --release -p noxfm-proto -p noxfm-core -p noxd
 }
 
 package() {
-  cd "$_root"
+  cd "$_pkgname"
   install -Dm755 "$srcdir/target/release/noxd" "$pkgdir/usr/bin/noxd"
   install -Dm755 "$srcdir/target/release/noxfm" "$pkgdir/usr/bin/noxfm"
   install -Dm644 dist/noxd.service "$pkgdir/usr/lib/systemd/user/noxd.service"
   install -Dm644 dist/dev.noxfm.Browser.desktop "$pkgdir/usr/share/applications/dev.noxfm.Browser.desktop"
   install -Dm644 dist/polkit/50-noxfm-udisks.rules "$pkgdir/usr/share/polkit-1/rules.d/50-noxfm-udisks.rules"
-  install -Dm644 docs/install.md "$pkgdir/usr/share/doc/noxfm/install.md"
-  install -Dm644 docs/known-issues.md "$pkgdir/usr/share/doc/noxfm/known-issues.md"
+  install -Dm644 docs/install.md "$pkgdir/usr/share/doc/$_pkgname/install.md"
+  install -Dm644 docs/known-issues.md "$pkgdir/usr/share/doc/$_pkgname/known-issues.md"
 }

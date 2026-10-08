@@ -13,6 +13,7 @@ pub mod supervisor;
 pub mod transfers;
 pub mod trash;
 pub mod undo;
+pub mod update;
 pub mod watcher;
 
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ pub struct Daemon {
     pub pins: ops::Pins,
     pub collapsed: ops::CollapsedItems,
     health_dismissed: std::sync::atomic::AtomicBool,
+    pub update: update::SelfUpdate,
     /// Purge age for the trash; `None` = don't purge or watch the trash (tests).
     trash_days: Option<u32>,
     /// Thumbnails being generated at once.
@@ -105,6 +107,7 @@ impl Daemon {
             pins,
             collapsed,
             health_dismissed: Default::default(),
+            update: Default::default(),
             trash_days,
             thumb_permits: tokio::sync::Semaphore::new(3),
             watcher,
@@ -121,6 +124,7 @@ impl Daemon {
             self.start_trash();
             // Once mounts had a moment to connect, say what's missing.
             if self.trash_days.is_some() {
+                self.start_self_update();
                 let me = self.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -148,6 +152,8 @@ impl Daemon {
         let (mut r, mut w) = stream.into_split();
         let Some(hello) = read_frame::<_, Hello>(&mut r).await? else { return Ok(()) };
         if !hello.compatible() {
+            // Usually a window from a newer install: see whether we were updated too.
+            self.update.check_now.notify_one();
             tracing::warn!(role = ?hello.role, "client built from a different protocol revision");
             let reply = Welcome::VersionMismatch { daemon_version: PROTOCOL_VERSION };
             write_frame(&mut w, &reply).await?;

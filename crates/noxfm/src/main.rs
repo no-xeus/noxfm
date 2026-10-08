@@ -12,6 +12,10 @@ use anyhow::Context;
 use noxfm_proto::{Client, Request, Role};
 
 fn main() -> anyhow::Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("{}", noxfm_proto::version_line("noxfm"));
+        return Ok(());
+    }
     let mut args = std::env::args_os().skip(1).peekable();
     let window = args.next_if(|a| a == "--window").is_some();
     // Window options, in any order, before the path.

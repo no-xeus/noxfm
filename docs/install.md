@@ -74,10 +74,32 @@ in `~/.config/noxfm/mounts.conf`.
 | `~/.local/state/noxfm/windows.log` | window errors (set `NOXFM_LOG=debug` on the daemon for more) |
 | `~/.cache/thumbnails/` | thumbnails, shared with other apps |
 
+## Updating
+
+Rebuild and reinstall the package. From this checkout:
+
+```sh
+git pull && cd dist/arch && makepkg -si
+```
+
+Once published, update `noxfm-git` from the AUR with your AUR helper.
+Package versions come from git (`0.1.0.r3.g1a2b3c4` = 3 commits after
+v0.1.0), so every build installs as an upgrade.
+
+You don't need to restart anything:
+- a running `noxd` notices its program was replaced and restarts itself into
+  the new one, once running transfers have finished;
+- open windows reconnect within a second;
+- newly opened windows are the new version.
+
+`noxd --version` and `noxfm --version` show the exact build.
+
 ## Troubleshooting
 
 - **"noxd was built from a different protocol revision"**: the daemon is
-  older than the windows. Run `systemctl --user restart noxd`.
+  older than the windows. It restarts into the new version within a few
+  seconds by itself. If it was started from a program that has since moved,
+  run `systemctl --user restart noxd`.
 - **Windows don't appear when the daemon was started by systemd**: windows
   use the display of the `noxfm` command that asked for them. Run `noxfm`
   from your session (a launcher or terminal), not over SSH.
