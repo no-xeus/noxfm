@@ -58,4 +58,5 @@ package() {
   install -Dm644 dist/polkit/50-noxfm-udisks.rules "$pkgdir/usr/share/polkit-1/rules.d/50-noxfm-udisks.rules"
   install -Dm644 docs/install.md "$pkgdir/usr/share/doc/$_pkgname/install.md"
   install -Dm644 docs/known-issues.md "$pkgdir/usr/share/doc/$_pkgname/known-issues.md"
+  install -Dm644 LICENSE-MIT LICENSE-APACHE -t "$pkgdir/usr/share/licenses/$pkgname/"
 }
