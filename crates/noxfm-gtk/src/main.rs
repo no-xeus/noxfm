@@ -4,7 +4,11 @@
 //! `NOXFM_WINDOW_BIN=noxfm-gtk`. Its stderr goes to
 //! `~/.local/state/noxfm/windows.log`.
 
+mod cells;
+mod complete;
 mod daemon;
+mod grid;
+mod list;
 mod window;
 
 use anyhow::Context;

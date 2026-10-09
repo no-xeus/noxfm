@@ -1,29 +1,38 @@
-//! The browser window: one folder, listed with sortable columns.
+//! The browser window: one folder, as a list or a grid of icons.
 
-use std::cell::{Cell, Ref, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use noxfm_core::{SortKey, fmt};
 use noxfm_proto::{Entry, EntryKind, Event, Request, Response};
 
+use crate::cells::{Cells, GRID_ICONS, GRID_ZOOM, LIST_ICONS, LIST_ZOOM, entry_of};
+use crate::complete::Completion;
 use crate::daemon::{Conn, Daemon};
+use crate::grid;
+use crate::list::ListView;
 
 /// Back/forward entries kept.
 const HISTORY_DEPTH: usize = 50;
-const ICON_PX: i32 = 24;
 
 /// Keyboard shortcuts of the window actions.
 pub fn set_accels(app: &gtk::Application) {
-    let accels: [(&str, &[&str]); 5] = [
+    let accels: [(&str, &[&str]); 12] = [
         ("win.back", &["<Alt>Left"]),
         ("win.forward", &["<Alt>Right"]),
         ("win.up", &["<Alt>Up"]),
         ("win.reload", &["F5"]),
         ("win.focus-path", &["<Ctrl>l"]),
+        ("win.view::list", &["<Ctrl>1"]),
+        ("win.view::grid", &["<Ctrl>2"]),
+        ("win.zoom-in", &["<Ctrl>plus", "<Ctrl>equal", "<Ctrl>KP_Add"]),
+        ("win.zoom-out", &["<Ctrl>minus", "<Ctrl>KP_Subtract"]),
+        ("win.zoom-reset", &["<Ctrl>0", "<Ctrl>KP_0"]),
+        ("win.show-hidden", &["<Ctrl>h"]),
+        ("win.toggle-view", &[]),
     ];
     for (action, keys) in accels {
         app.set_accels_for_action(action, keys);
@@ -38,6 +47,12 @@ enum Nav {
     Forward,
     /// The same folder again (changed on disk, reconnected, followed a move).
     Reload,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    List,
+    Grid,
 }
 
 #[derive(Default)]
@@ -55,19 +70,20 @@ pub struct Browser {
     daemon: Daemon,
     window: gtk::ApplicationWindow,
     path_bar: gtk::Entry,
-    /// Entries (as `BoxedAnyObject`s) in daemon order; `selection` sorts them.
+    completion: Rc<Completion>,
+    /// Entries (as `BoxedAnyObject`s) in daemon order; hidden ones are
+    /// filtered out and the rest sorted before `selection`.
     store: gio::ListStore,
+    hidden_filter: gtk::CustomFilter,
+    show_hidden: Rc<Cell<bool>>,
     selection: gtk::MultiSelection,
+    list: ListView,
+    grid: gtk::GridView,
+    views: gtk::Stack,
+    mode: Cell<ViewMode>,
+    cells: Rc<Cells>,
     status: gtk::Label,
-    sorter: gtk::ColumnViewSorter,
-    size_column: gtk::ColumnViewColumn,
-    /// Size cells on screen, updated in place when a folder size arrives.
-    size_labels: Rc<RefCell<HashMap<PathBuf, glib::WeakRef<gtk::Label>>>>,
     state: RefCell<State>,
-}
-
-fn entry_of(obj: &glib::Object) -> Ref<'_, Entry> {
-    obj.downcast_ref::<glib::BoxedAnyObject>().expect("list items are entries").borrow::<Entry>()
 }
 
 /// `/a/b/`, as typed in the path bar.
@@ -76,136 +92,58 @@ fn display(p: &Path) -> String {
     if s.ends_with('/') { s } else { format!("{s}/") }
 }
 
-fn size_text(e: &Entry) -> String {
-    match (e.kind, e.size) {
-        (_, Some(b)) => fmt::size(b),
-        // Being measured. Symlinked folders are never walked.
-        (EntryKind::Dir, None) if !e.symlink => "…".into(),
-        _ => String::new(),
-    }
+fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder().child(child).vexpand(true).build()
 }
 
-fn label_factory(text: impl Fn(&Entry) -> String + 'static) -> gtk::SignalListItemFactory {
-    let f = gtk::SignalListItemFactory::new();
-    f.connect_setup(|_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        item.set_child(Some(&gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build()));
-    });
-    f.connect_bind(move |_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let label = item.child().and_downcast::<gtk::Label>().unwrap();
-        label.set_text(&text(&entry_of(&item.item().unwrap())));
-    });
-    f
-}
-
-fn name_factory() -> gtk::SignalListItemFactory {
-    let f = gtk::SignalListItemFactory::new();
-    f.connect_setup(|_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Image::builder().pixel_size(ICON_PX).build());
-        row.append(&gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
-        item.set_child(Some(&row));
-    });
-    f.connect_bind(|_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let row = item.child().unwrap();
-        let icon = row.first_child().and_downcast::<gtk::Image>().unwrap();
-        let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
-        let obj = item.item().unwrap();
-        let e = entry_of(&obj);
-        let names = fmt::icon_names(&e);
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        icon.set_from_gicon(&gio::ThemedIcon::from_names(&names));
-        label.set_text(&e.name);
-    });
-    f
-}
-
-/// Size cells register themselves so a size update can reach them.
-fn size_factory(labels: &Rc<RefCell<HashMap<PathBuf, glib::WeakRef<gtk::Label>>>>) -> gtk::SignalListItemFactory {
-    let f = label_factory(size_text);
-    let bound = labels.clone();
-    f.connect_bind(move |_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let label = item.child().and_downcast::<gtk::Label>().unwrap();
-        bound.borrow_mut().insert(entry_of(&item.item().unwrap()).path.clone(), label.downgrade());
-    });
-    let unbound = labels.clone();
-    f.connect_unbind(move |_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        if let Some(obj) = item.item() {
-            unbound.borrow_mut().remove(&entry_of(&obj).path);
-        }
-    });
-    f
-}
-
-/// A column sorted in noxfm's order: folders first and unknown values last
-/// in both directions.
-fn column(
-    title: &str,
-    key: SortKey,
-    ascending: &Rc<Cell<bool>>,
-    factory: gtk::SignalListItemFactory,
-) -> gtk::ColumnViewColumn {
-    let asc = ascending.clone();
-    let sorter = gtk::CustomSorter::new(move |a, b| {
-        let asc = asc.get();
-        let order = noxfm_core::compare(&entry_of(a), &entry_of(b), key, asc);
-        // GTK reverses a descending column's result; noxfm's order isn't a
-        // plain reverse, so undo that.
-        (if asc { order } else { order.reverse() }).into()
-    });
-    let col = gtk::ColumnViewColumn::new(Some(title), Some(factory));
-    col.set_sorter(Some(&sorter));
-    col.set_resizable(true);
-    col
+fn view_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    let views = gio::Menu::new();
+    views.append(Some("List"), Some("win.view::list"));
+    views.append(Some("Icons"), Some("win.view::grid"));
+    menu.append_section(None, &views);
+    let zoom = gio::Menu::new();
+    zoom.append(Some("Larger items"), Some("win.zoom-in"));
+    zoom.append(Some("Smaller items"), Some("win.zoom-out"));
+    zoom.append(Some("Default size"), Some("win.zoom-reset"));
+    menu.append_section(None, &zoom);
+    let show = gio::Menu::new();
+    show.append(Some("Hidden files"), Some("win.show-hidden"));
+    show.append(Some("Date created"), Some("win.show-created"));
+    show.append(Some("Owner and permissions"), Some("win.show-details"));
+    menu.append_section(Some("Show"), &show);
+    menu
 }
 
 impl Browser {
     pub fn open(app: &gtk::Application, daemon: Daemon, conn: async_channel::Receiver<Conn>, start: PathBuf) {
+        let cells = Cells::new(daemon.clone());
+        let list = ListView::new(&cells);
+        let grid = grid::new(&cells);
+
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let view = gtk::ColumnView::new(None::<gtk::MultiSelection>);
-        let ascending = Rc::new(Cell::new(true));
-        let size_labels = Rc::default();
-
-        let name_col = column("Name", SortKey::Name, &ascending, name_factory());
-        name_col.set_expand(true);
-        let type_col = column(
-            "Type",
-            SortKey::Extension,
-            &ascending,
-            label_factory(|e| e.extension().map(str::to_lowercase).unwrap_or_default()),
-        );
-        type_col.set_fixed_width(80);
-        let size_column = column("Size", SortKey::Size, &ascending, size_factory(&size_labels));
-        size_column.set_fixed_width(100);
-        let modified_col = column("Modified", SortKey::Modified, &ascending, label_factory(|e| fmt::time(e.modified)));
-        modified_col.set_fixed_width(150);
-        for c in [&name_col, &type_col, &size_column, &modified_col] {
-            view.append_column(c);
-        }
-
-        let sorter = view.sorter().and_downcast::<gtk::ColumnViewSorter>().expect("column view sorter");
-        // Before the sort model connects, so the direction is current when it re-sorts.
-        let asc = ascending.clone();
-        sorter.connect_changed(move |s, _| asc.set(s.primary_sort_order() == gtk::SortType::Ascending));
-        let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
+        let show_hidden = Rc::new(Cell::new(false));
+        let shown = show_hidden.clone();
+        let hidden_filter = gtk::CustomFilter::new(move |o| shown.get() || !entry_of(o).hidden);
+        let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(hidden_filter.clone()));
+        let sorted = gtk::SortListModel::new(Some(filtered), Some(list.sorter.clone()));
         let selection = gtk::MultiSelection::new(Some(sorted));
-        view.set_model(Some(&selection));
-        view.sort_by_column(Some(&name_col), gtk::SortType::Ascending);
+        // Only the shown view holds the model, so the other builds no items.
+        list.view.set_model(Some(&selection));
+
+        let views = gtk::Stack::new();
+        views.add_named(&scrolled(&list.view), Some("list"));
+        views.add_named(&scrolled(&grid), Some("grid"));
 
         let path_bar = gtk::Entry::builder().hexpand(true).build();
+        let completion = Completion::attach(&path_bar, daemon.clone());
         let status = gtk::Label::builder().xalign(0.0).margin_start(8).margin_end(8).margin_top(4).margin_bottom(4).build();
         status.add_css_class("caption");
-        let scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let bar = gtk::Box::builder().margin_start(6).margin_end(6).margin_top(6).margin_bottom(6).build();
         bar.append(&path_bar);
         content.append(&bar);
-        content.append(&scroller);
+        content.append(&views);
         content.append(&status);
 
         let header = gtk::HeaderBar::new();
@@ -219,6 +157,14 @@ impl Browser {
             b.set_tooltip_text(Some(tip));
             header.pack_start(&b);
         }
+        let menu = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&view_menu()).tooltip_text("View").build();
+        header.pack_end(&menu);
+        let toggle = gtk::Button::builder()
+            .icon_name("view-grid-symbolic")
+            .action_name("win.toggle-view")
+            .tooltip_text("Show as icons (Ctrl+2)")
+            .build();
+        header.pack_end(&toggle);
 
         let window = gtk::ApplicationWindow::builder()
             .application(app)
@@ -233,20 +179,26 @@ impl Browser {
             daemon,
             window,
             path_bar,
+            completion,
             store,
+            hidden_filter,
+            show_hidden,
             selection,
+            list,
+            grid,
+            views,
+            mode: Cell::new(ViewMode::List),
+            cells,
             status,
-            sorter,
-            size_column,
-            size_labels,
             state: RefCell::new(State { path: start.clone(), ..Default::default() }),
         });
-        this.path_bar.set_text(&display(&start));
+        this.completion.set_text_quietly(&display(&start));
         this.status.set_text("Connecting to noxd…");
-        this.install_actions();
-        this.connect_signals(&view);
+        this.install_actions(&toggle);
+        this.connect_signals();
 
         this.window.present();
+        this.list.view.grab_focus();
         // This loop owns the browser: it runs as long as the process (one
         // window per process; closing it quits the application).
         glib::spawn_future_local(async move {
@@ -256,9 +208,19 @@ impl Browser {
         });
     }
 
-    fn install_actions(self: &Rc<Self>) {
+    fn add_action(self: &Rc<Self>, a: &gio::SimpleAction, run: impl Fn(&Rc<Self>, &gio::SimpleAction, Option<&glib::Variant>) + 'static) {
+        let weak = Rc::downgrade(self);
+        a.connect_activate(move |a, param| {
+            if let Some(b) = weak.upgrade() {
+                run(&b, a, param);
+            }
+        });
+        self.window.add_action(a);
+    }
+
+    fn install_actions(self: &Rc<Self>, toggle: &gtk::Button) {
         type Run = fn(&Rc<Browser>);
-        let actions: [(&str, Run); 5] = [
+        let plain: [(&str, Run); 8] = [
             ("back", Self::go_back),
             ("forward", Self::go_forward),
             ("up", Self::go_up),
@@ -266,45 +228,103 @@ impl Browser {
             ("focus-path", |b| {
                 b.path_bar.grab_focus();
             }),
+            ("zoom-in", |b| b.zoom(1)),
+            ("zoom-out", |b| b.zoom(-1)),
+            ("zoom-reset", |b| b.zoom(0)),
         ];
-        for (name, run) in actions {
-            let a = gio::SimpleAction::new(name, None);
-            let weak = Rc::downgrade(self);
-            a.connect_activate(move |_, _| {
-                if let Some(b) = weak.upgrade() {
-                    run(&b);
-                }
+        for (name, run) in plain {
+            self.add_action(&gio::SimpleAction::new(name, None), move |b, _, _| run(b));
+        }
+
+        let view = gio::SimpleAction::new_stateful("view", Some(glib::VariantTy::STRING), &"list".to_variant());
+        let toggle = toggle.clone();
+        self.add_action(&view, move |b, a, param| {
+            let Some(p) = param else { return };
+            a.set_state(p);
+            let grid = p.str() == Some("grid");
+            b.set_view(if grid { ViewMode::Grid } else { ViewMode::List });
+            toggle.set_icon_name(if grid { "view-list-symbolic" } else { "view-grid-symbolic" });
+            toggle.set_tooltip_text(Some(if grid { "Show as list (Ctrl+1)" } else { "Show as icons (Ctrl+2)" }));
+        });
+        self.add_action(&gio::SimpleAction::new("toggle-view", None), |b, _, _| {
+            let next = if b.mode.get() == ViewMode::List { "grid" } else { "list" };
+            WidgetExt::activate_action(&b.window, "win.view", Some(&next.to_variant())).ok();
+        });
+
+        // On/off options, shown as check items in the View menu.
+        type Toggle = fn(&Browser, bool);
+        let toggles: [(&str, Toggle); 3] = [
+            ("show-hidden", |b, on| {
+                b.show_hidden.set(on);
+                b.hidden_filter.changed(if on { gtk::FilterChange::LessStrict } else { gtk::FilterChange::MoreStrict });
+                b.update_status();
+            }),
+            ("show-created", |b, on| b.list.created.set_visible(on)),
+            ("show-details", |b, on| {
+                b.list.owner.set_visible(on);
+                b.list.permissions.set_visible(on);
+            }),
+        ];
+        for (name, apply) in toggles {
+            let a = gio::SimpleAction::new_stateful(name, None, &false.to_variant());
+            self.add_action(&a, move |b, a, _| {
+                let on = !a.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+                a.set_state(&on.to_variant());
+                apply(b, on);
             });
-            self.window.add_action(&a);
         }
         self.update_history_actions();
     }
 
-    fn connect_signals(self: &Rc<Self>, view: &gtk::ColumnView) {
+    fn connect_signals(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        view.connect_activate(move |_, pos| {
+        self.list.view.connect_activate(move |_, pos| {
+            if let Some(b) = weak.upgrade() {
+                b.activate(pos);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.grid.connect_activate(move |_, pos| {
             if let Some(b) = weak.upgrade() {
                 b.activate(pos);
             }
         });
 
-        // Backspace goes up, except while typing in the path bar.
-        let keys = gtk::EventControllerKey::new();
-        let weak = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk::Key::BackSpace
-                && let Some(b) = weak.upgrade()
-            {
-                b.go_up();
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        view.add_controller(keys);
+        for view in [self.list.view.upcast_ref::<gtk::Widget>(), self.grid.upcast_ref()] {
+            // Backspace goes up, except while typing in the path bar.
+            let keys = gtk::EventControllerKey::new();
+            let weak = Rc::downgrade(self);
+            keys.connect_key_pressed(move |_, key, _, _| {
+                if key == gdk::Key::BackSpace
+                    && let Some(b) = weak.upgrade()
+                {
+                    b.go_up();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            view.add_controller(keys);
+
+            // Ctrl + wheel zooms, before the scrolled window scrolls.
+            let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let weak = Rc::downgrade(self);
+            wheel.connect_scroll(move |c, _, dy| {
+                if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) || dy == 0.0 {
+                    return glib::Propagation::Proceed;
+                }
+                if let Some(b) = weak.upgrade() {
+                    b.zoom(if dy < 0.0 { 1 } else { -1 });
+                }
+                glib::Propagation::Stop
+            });
+            view.parent().expect("views are in scrolled windows").add_controller(wheel);
+        }
 
         let weak = Rc::downgrade(self);
         self.path_bar.connect_activate(move |entry| {
             let Some(b) = weak.upgrade() else { return };
+            b.completion.close();
             let home = noxfm_core::complete::home_dir();
             let p = noxfm_core::complete::expand_tilde(entry.text().trim(), &home);
             b.load(PathBuf::from(p), Nav::New);
@@ -318,14 +338,50 @@ impl Browser {
         });
     }
 
-    fn on_conn(self: &Rc<Self>, c: Conn) {
-        match &c {
-            Conn::Connected => log::debug!("connected to noxd"),
-            Conn::Lost(why) => log::debug!("noxd lost: {why}"),
-            Conn::Event(ev) => log::debug!("event {ev:?}"),
+    fn set_view(&self, mode: ViewMode) {
+        if self.mode.replace(mode) == mode {
+            return;
         }
+        let (name, focus): (&str, &gtk::Widget) = match mode {
+            ViewMode::List => {
+                self.grid.set_model(None::<&gtk::MultiSelection>);
+                self.list.view.set_model(Some(&self.selection));
+                ("list", self.list.view.upcast_ref())
+            }
+            ViewMode::Grid => {
+                self.list.view.set_model(None::<&gtk::MultiSelection>);
+                self.grid.set_model(Some(&self.selection));
+                ("grid", self.grid.upcast_ref())
+            }
+        };
+        self.views.set_visible_child_name(name);
+        focus.grab_focus();
+    }
+
+    /// One step bigger (`1`), smaller (`-1`), or back to the default (`0`),
+    /// in the current view.
+    fn zoom(&self, step: i32) {
+        let (level, sizes, default) = match self.mode.get() {
+            ViewMode::List => (&self.cells.list_zoom, LIST_ICONS.len(), LIST_ZOOM),
+            ViewMode::Grid => (&self.cells.grid_zoom, GRID_ICONS.len(), GRID_ZOOM),
+        };
+        let new = match step {
+            0 => default,
+            s => level.get().saturating_add_signed(s as isize).min(sizes - 1),
+        };
+        if level.replace(new) == new {
+            return;
+        }
+        match self.mode.get() {
+            ViewMode::List => self.list.zoomed(),
+            ViewMode::Grid => grid::zoomed(&self.grid, &self.cells),
+        }
+    }
+
+    fn on_conn(self: &Rc<Self>, c: Conn) {
         match c {
             Conn::Connected => {
+                log::debug!("connected to noxd");
                 let path = {
                     let mut st = self.state.borrow_mut();
                     // The new connection watches nothing yet.
@@ -335,6 +391,7 @@ impl Browser {
                 self.load(path, Nav::Reload);
             }
             Conn::Lost(why) => {
+                log::debug!("noxd lost: {why}");
                 self.state.borrow_mut().error = Some(format!("noxd unavailable: {why}"));
                 self.update_status();
             }
@@ -371,12 +428,9 @@ impl Browser {
             return;
         };
         obj.borrow_mut::<Entry>().size = Some(bytes);
-        let label = self.size_labels.borrow().get(path).and_then(|w| w.upgrade());
-        if let Some(label) = label {
-            label.set_text(&fmt::size(bytes));
-        }
-        if self.sorter.primary_sort_column().as_ref() == Some(&self.size_column)
-            && let Some(s) = self.size_column.sorter()
+        self.cells.size_updated(path, bytes);
+        if self.list.sorted_by_size()
+            && let Some(s) = self.list.size.sorter()
         {
             s.changed(gtk::SorterChange::Different);
         }
@@ -388,7 +442,6 @@ impl Browser {
         let daemon = self.daemon.clone();
         glib::spawn_future_local(async move {
             let reply = daemon.request(Request::ListDir { path, watch: true }).await;
-            log::debug!("listing reply: {:?}", reply.as_ref().map(|_| ()));
             let Some(this) = weak.upgrade() else { return };
             match reply {
                 Ok(Response::Dir { path, fs, entries }) => this.show(path, fs, entries, nav),
@@ -433,6 +486,9 @@ impl Browser {
         if let Some(old) = old_watch {
             self.fire(Request::Unsubscribe { path: old });
         }
+        if !same {
+            self.cells.forget_thumbnails();
+        }
 
         // A relisting of the same folder keeps the selection.
         let keep = if same { self.selected_paths() } else { HashSet::new() };
@@ -447,8 +503,9 @@ impl Browser {
             }
         }
 
-        if !self.path_bar.has_focus() || !same {
-            self.path_bar.set_text(&display(&path));
+        // Don't overwrite what the user is typing over a mere refresh.
+        if !same || !self.path_bar.has_focus() {
+            self.completion.set_text_quietly(&display(&path));
         }
         let title = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         self.window.set_title(Some(&title));
@@ -520,7 +577,7 @@ impl Browser {
 
     fn update_status(&self) {
         let st = self.state.borrow();
-        let n = self.store.n_items();
+        let n = self.selection.n_items();
         let mut parts = vec![format!("{n} item{}", if n == 1 { "" } else { "s" })];
         let selected = self.selection.selection().size();
         if selected > 0 {

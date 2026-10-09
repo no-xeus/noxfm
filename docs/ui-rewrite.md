@@ -47,14 +47,15 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
 
 ## Phases
 
-1. **Window and listing.** Header bar (back, forward, up), path bar, list view
+1. ✅ **Window and listing.** Header bar (back, forward, up), path bar, list view
    (icon, name, type, size, modified) with header sorting, live updates
    (`DirChanged`, `SizeUpdated`, `Moved`), opening files and folders, status
    line, reconnecting to noxd.
-2. **Views.** Icon grid, Ctrl+1/Ctrl+2, zoom (Ctrl + / Ctrl − / Ctrl+wheel),
+2. ✅ **Views.** Icon grid, Ctrl+1/Ctrl+2, zoom (Ctrl + / Ctrl − / Ctrl+wheel),
    keyboard navigation, rubber-band selection, hidden files, created date,
    owner/permissions columns, thumbnails, path completion in a popover above
-   the content.
+   the content. Not carried over yet: the default app's icon on file icons
+   (FastOpen badge), git badge, mime-mismatch warning — with phase 5 panels.
 3. **Actions.** Context menus (items, background, Recent, Trash), clipboard
    with cut hint (cut items dimmed until pasted or replaced), paste and paste
    as link, drag and drop (in, out, onto folders), rename inline, new
@@ -72,8 +73,9 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
 - Cut items keep a visual hint (dimmed) — phase 3.
 - Undoing a rename of the folder you're in follows it — done in the daemon
   (`Event::Moved`); the GTK window handles it from phase 1.
-- Path completion shows above other elements, not pushing them down — phase 2.
-- Ctrl + / Ctrl − resize items — phase 2.
+- Path completion shows above other elements, not pushing them down — done
+  (popover under the path bar).
+- Ctrl + / Ctrl − resize items — done (also Ctrl+wheel, Ctrl+0, View menu).
 - Read-only files and folders are marked, depending on who runs the window
   (user or root) — to design: lock badge on the icon plus a "You can't modify
   this folder" bar with Paste/New disabled; checked with `access(2)` in the
