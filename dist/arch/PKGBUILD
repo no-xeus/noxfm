@@ -4,7 +4,7 @@
 # tag v0.1.0, so every new build installs as an upgrade.
 # For a package built from GitHub instead, see dist/aur/noxfm-git.
 pkgname=noxfm
-pkgver=0.1.0
+pkgver=0.1.0.r3.g6392029
 pkgrel=1
 pkgdesc='File manager with a background daemon: live sizes, recent files, drive mounting, tabs'
 arch=('x86_64' 'aarch64')

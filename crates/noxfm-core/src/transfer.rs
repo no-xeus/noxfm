@@ -182,7 +182,8 @@ impl Job<'_> {
         let result = if rustix::fs::ioctl_ficlone(&output, &input).is_ok() {
             self.done += meta.len();
             (self.on_progress)(self.done, src);
-            Ok(())
+            // Same as `stream`, which checks once more before seeing EOF.
+            self.check()
         } else {
             self.stream(&mut input, &mut output, src, target)
         };
@@ -351,7 +352,7 @@ mod tests {
         let r = run(TransferOp::Copy, &[d.join("big")], &out, &cancel, &mut |_, _| {
             cancel.store(true, Ordering::Relaxed)
         });
-        assert!(matches!(r, Err(TransferError::Cancelled)));
+        assert!(matches!(r, Err(TransferError::Cancelled)), "{r:?}");
         assert!(!out.join("big").exists(), "partial file is removed");
     }
 }
