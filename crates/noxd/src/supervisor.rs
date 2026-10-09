@@ -101,9 +101,7 @@ impl Supervisor {
         if let Some(p) = path {
             args.push(p.as_os_str());
         }
-        // `noxfm-gtk` while the GTK window is being written (docs/ui-rewrite.md).
-        let bin = std::env::var("NOXFM_WINDOW_BIN").unwrap_or_else(|_| "noxfm".into());
-        self.spawn(&bin, &args)
+        self.spawn("noxfm", &args)
     }
 }
 

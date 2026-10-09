@@ -1,38 +1,72 @@
-//! Keeps one daemon connection alive as an iced subscription.
+//! The daemon connection, kept alive on a tokio thread. GTK code awaits
+//! replies with [`Daemon::request`] and gets connection changes and events on
+//! a channel.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cosmic::iced::futures::SinkExt;
-use cosmic::iced::{Subscription, stream};
-use noxfm_proto::{Client, Event, Role};
+use noxfm_proto::{Client, Event, Request, Response, Role};
 
-#[derive(Debug, Clone)]
 pub enum Conn {
-    Connected(Client),
+    Connected,
     Event(Event),
     Lost(String),
 }
 
-pub fn subscription(socket: PathBuf, role: Role) -> Subscription<Conn> {
-    Subscription::run_with((socket, role), |(socket, role)| {
-        let (socket, role) = (socket.clone(), *role);
-        stream::channel(64, async move |mut out| {
+#[derive(Clone)]
+pub struct Daemon {
+    rt: tokio::runtime::Handle,
+    client: Arc<Mutex<Option<Client>>>,
+}
+
+impl Daemon {
+    /// Connects in the background, and reconnects whenever noxd goes away
+    /// (it restarts itself after an update).
+    pub fn start(socket: PathBuf) -> (Daemon, async_channel::Receiver<Conn>) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        // Lives as long as the process.
+        let rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(rt));
+        let client = Arc::new(Mutex::new(None));
+        let (tx, rx) = async_channel::unbounded();
+        let shared = client.clone();
+        rt.spawn(async move {
             loop {
-                match Client::connect(&socket, role).await {
-                    Ok((client, mut events)) => {
-                        let _ = out.send(Conn::Connected(client)).await;
-                        while let Some(ev) = events.recv().await {
-                            let _ = out.send(Conn::Event(ev)).await;
+                let lost = match Client::connect(&socket, Role::Browser).await {
+                    Ok((c, mut events)) => {
+                        *shared.lock().unwrap() = Some(c);
+                        if tx.send(Conn::Connected).await.is_err() {
+                            return;
                         }
-                        let _ = out.send(Conn::Lost("daemon disconnected".into())).await;
+                        while let Some(ev) = events.recv().await {
+                            if tx.send(Conn::Event(ev)).await.is_err() {
+                                return;
+                            }
+                        }
+                        *shared.lock().unwrap() = None;
+                        "daemon disconnected".to_owned()
                     }
-                    Err(e) => {
-                        let _ = out.send(Conn::Lost(e.to_string())).await;
-                    }
+                    Err(e) => e.to_string(),
+                };
+                if tx.send(Conn::Lost(lost)).await.is_err() {
+                    return;
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-        })
-    })
+        });
+        (Daemon { rt: rt.handle().clone(), client }, rx)
+    }
+
+    /// Sends `req` from the GTK main loop; the reply is awaited there.
+    pub async fn request(&self, req: Request) -> Result<Response, String> {
+        let client = self.client.lock().unwrap().clone().ok_or_else(|| "noxd unavailable".to_owned())?;
+        self.rt
+            .spawn(async move { client.request(req).await.map_err(|e| e.to_string()) })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+    }
 }

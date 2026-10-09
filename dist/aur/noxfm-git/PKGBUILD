@@ -8,7 +8,7 @@ pkgdesc='File manager with a background daemon: live sizes, recent files, drive 
 arch=('x86_64' 'aarch64')
 url='https://github.com/no-xeus/noxfm'
 license=('MIT OR Apache-2.0')
-depends=('udisks2' 'polkit' 'wayland' 'libxkbcommon' 'vulkan-icd-loader' 'fontconfig' 'gcc-libs' 'glibc')
+depends=('udisks2' 'polkit' 'gtk4' 'glib2' 'gcc-libs' 'glibc')
 makedepends=('cargo' 'git')
 optdepends=(
   'ffmpeg: video thumbnails'

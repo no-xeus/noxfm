@@ -12,10 +12,8 @@ license=('MIT OR Apache-2.0')
 depends=(
   'udisks2'            # drives, partitions, mounting
   'polkit'             # mount permissions (rule shipped below)
-  'wayland'
-  'libxkbcommon'
-  'vulkan-icd-loader'  # wgpu rendering; falls back to software otherwise
-  'fontconfig'
+  'gtk4'               # the windows
+  'glib2'
   'gcc-libs'
   'glibc'
 )

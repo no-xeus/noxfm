@@ -1,37 +1,21 @@
 # Known issues
 
-## Drag and drop does nothing on Hyprland
+## To confirm: drag and drop on Hyprland
 
-**Status:** open. Parked on 2026-10-08 so other POC work could continue.
-**Seen with:** Hyprland 0.56.2, libcosmic `60ad2cc`.
+Broken with the libcosmic windows (below); not tried yet with the GTK4 ones.
 
-You can start a drag and the target window receives the offer. When you drop, nothing gets transferred.
+## Gone with the move to GTK4
 
-From the trace log, one drag looks like this:
+The first windows were built on libcosmic. Two problems came from it; the
+windows moved to GTK4 on 2026-10-09 (see [ui-rewrite.md](ui-rewrite.md)):
 
-```
-Offer Enter { mime_types: ["text/uri-list"] }
-Offer SelectedAction(DndAction(0x0))      <- the compositor negotiates "no action"
-Offer Enter { mime_types: [] }
-Offer Drop
-Source Cancelled                          <- so the source is cancelled and no data is read
-```
-
-The source offers `Copy | Move` and every drop target accepts `Copy | Move` with
-`Move` preferred, yet Hyprland always reports action `0`. Per the
-`wl_data_device` protocol, a drop with no negotiated action cancels the source.
-So this looks like an action-negotiation incompatibility between Hyprland and the
-smithay-clipboard drag-and-drop code that libcosmic uses, not a noxfm bug.
-
-Ideas for later:
-- Check whether cosmic-files (same toolkit) shows the same behaviour on Hyprland.
-- Try a source offering only one action (`Copy`).
-- On a drop with action `0`, read the offer anyway and decide copy or move
-  ourselves. This depends on whether the offer can still be read before the
-  cancel.
-
-To collect a trace, start the daemon with
-`NOXFM_LOG="warn,noxfm=debug,libcosmic::widget::dnd_destination=trace,iced::winit::clipboard=trace" noxd`
-and read `~/.local/state/noxfm/windows.log`.
-
-Copy/cut/paste through the clipboard (Ctrl+C / Ctrl+X / Ctrl+V) works and covers the same use case for now.
+- **Crash when opening a context menu** after using one, once the selection
+  had changed (one file → several, or after clicking a folder in the
+  sidebar). libcosmic kept the id of a menu popup after it was closed, and
+  laid the next menu out against stale widgets.
+- **Drag and drop did nothing on Hyprland** (Hyprland 0.56.2). The
+  compositor negotiated "no action" with the drag-and-drop code libcosmic
+  used, so every drop was cancelled. GTK4's drag and drop is a different
+  implementation, expected to work. If drops still fail, start the daemon
+  with `NOXFM_LOG=debug noxd` and look for `drop … item(s) on …` in
+  `~/.local/state/noxfm/windows.log`.

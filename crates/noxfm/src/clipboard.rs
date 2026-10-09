@@ -1,89 +1,42 @@
-//! Files on the Wayland clipboard, in the formats other file managers use,
-//! so copy/paste works between noxfm and Nautilus, Dolphin, terminals, etc.
+//! Files on the clipboard, in the formats other file managers use, so
+//! copy/paste works between noxfm and Nautilus, Dolphin, terminals, etc.
 
-use std::borrow::Cow;
 use std::path::PathBuf;
 
-use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
+use gtk::prelude::*;
+use gtk::{gdk, gio, glib};
 use noxfm_core::uri;
 use noxfm_proto::TransferOp;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClipboardFiles {
-    pub op: TransferOp,
-    pub paths: Vec<PathBuf>,
-}
-
-impl AsMimeTypes for ClipboardFiles {
-    fn available(&self) -> Cow<'static, [String]> {
-        Cow::Owned(vec![uri::GNOME_COPIED.into(), uri::URI_LIST.into(), uri::PLAIN.into(), "text/plain".into()])
-    }
-
-    fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
-        let s = match mime {
-            uri::GNOME_COPIED => uri::gnome_copied(self.op, &self.paths),
-            uri::URI_LIST => uri::uri_list(&self.paths),
-            m if m.starts_with("text/plain") => uri::plain(&self.paths),
-            _ => return None,
-        };
-        Some(Cow::Owned(s.into_bytes()))
+pub fn write(clipboard: &gdk::Clipboard, op: TransferOp, paths: &[PathBuf]) {
+    let bytes = |mime: &str, s: String| gdk::ContentProvider::for_bytes(mime, &glib::Bytes::from_owned(s.into_bytes()));
+    let provider = gdk::ContentProvider::new_union(&[
+        // Only gnome-copied-files can say "cut".
+        bytes(uri::GNOME_COPIED, uri::gnome_copied(op, paths)),
+        bytes(uri::URI_LIST, uri::uri_list(paths)),
+        bytes(uri::PLAIN, uri::plain(paths)),
+        bytes("text/plain", uri::plain(paths)),
+    ]);
+    if let Err(e) = clipboard.set_content(Some(&provider)) {
+        log::warn!("clipboard: {e}");
     }
 }
 
-impl AllowedMimeTypes for ClipboardFiles {
-    /// Most preferred first: only gnome-copied-files can say "cut".
-    fn allowed() -> Cow<'static, [String]> {
-        Cow::Owned(vec![uri::GNOME_COPIED.into(), uri::URI_LIST.into()])
-    }
-}
-
-impl TryFrom<(Vec<u8>, String)> for ClipboardFiles {
-    type Error = ();
-
-    fn try_from((data, mime): (Vec<u8>, String)) -> Result<Self, ()> {
-        let (op, paths) = match mime.as_str() {
-            uri::GNOME_COPIED => uri::parse_gnome_copied(&data).ok_or(())?,
-            uri::URI_LIST => (TransferOp::Copy, uri::parse_uri_list(&data)),
-            _ => return Err(()),
-        };
-        if paths.is_empty() { Err(()) } else { Ok(ClipboardFiles { op, paths }) }
-    }
-}
-
-/// Files being dragged. Drag-and-drop between apps speaks `text/uri-list`;
-/// whether it's a move or a copy is negotiated separately.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DragFiles(pub Vec<PathBuf>);
-
-impl AsMimeTypes for DragFiles {
-    fn available(&self) -> Cow<'static, [String]> {
-        Cow::Owned(vec![uri::URI_LIST.into(), uri::PLAIN.into(), "text/plain".into()])
-    }
-
-    fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
-        let s = match mime {
-            uri::URI_LIST => uri::uri_list(&self.0),
-            m if m.starts_with("text/plain") => uri::plain(&self.0),
-            _ => return None,
-        };
-        Some(Cow::Owned(s.into_bytes()))
-    }
-}
-
-impl AllowedMimeTypes for DragFiles {
-    fn allowed() -> Cow<'static, [String]> {
-        Cow::Owned(vec![uri::URI_LIST.into()])
-    }
-}
-
-impl TryFrom<(Vec<u8>, String)> for DragFiles {
-    type Error = ();
-
-    fn try_from((data, mime): (Vec<u8>, String)) -> Result<Self, ()> {
-        if mime != uri::URI_LIST {
-            return Err(());
-        }
-        let paths = uri::parse_uri_list(&data);
-        if paths.is_empty() { Err(()) } else { Ok(DragFiles(paths)) }
-    }
+/// The files on the clipboard and whether they were cut, if any.
+pub async fn read(clipboard: &gdk::Clipboard) -> Option<(TransferOp, Vec<PathBuf>)> {
+    let (stream, mime) = clipboard.read_future(&[uri::GNOME_COPIED, uri::URI_LIST], glib::Priority::DEFAULT).await.ok()?;
+    let out = gio::MemoryOutputStream::new_resizable();
+    out.splice_future(
+        &stream,
+        gio::OutputStreamSpliceFlags::CLOSE_SOURCE | gio::OutputStreamSpliceFlags::CLOSE_TARGET,
+        glib::Priority::DEFAULT,
+    )
+    .await
+    .ok()?;
+    let data = out.steal_as_bytes();
+    let (op, paths) = match mime.as_str() {
+        uri::GNOME_COPIED => uri::parse_gnome_copied(&data)?,
+        _ => (TransferOp::Copy, uri::parse_uri_list(&data)),
+    };
+    (!paths.is_empty()).then_some((op, paths))
 }

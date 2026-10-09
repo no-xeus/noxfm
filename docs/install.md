@@ -29,7 +29,7 @@ xdg-mime default dev.noxfm.Browser.desktop inode/directory   # optional: default
 | Needed for | Package | Without it |
 |---|---|---|
 | Drives and partitions, mounting | `udisks2` (+ `polkit`) | no Devices section |
-| Rendering | `wayland`, `libxkbcommon`, `vulkan-icd-loader` | no window (software rendering is used without Vulkan) |
+| Windows | `gtk4` | no window |
 | Video thumbnails | `ffmpeg` | videos show a plain icon |
 | Git branch/status in Properties | `git` | no Git line |
 | "Open in terminal", terminal apps like Neovim | any terminal emulator (`$TERMINAL`, `xdg-terminal-exec`, kitty, foot, alacritty, …) | those actions fail with a message |
@@ -103,5 +103,7 @@ You don't need to restart anything:
 - **Windows don't appear when the daemon was started by systemd**: windows
   use the display of the `noxfm` command that asked for them. Run `noxfm`
   from your session (a launcher or terminal), not over SSH.
-- **Drag and drop between windows does nothing on Hyprland**: see
-  [known-issues.md](known-issues.md). Use copy/paste instead.
+- **Something looks or behaves wrong in a window**: see
+  [known-issues.md](known-issues.md), and the window log
+  (`~/.local/state/noxfm/windows.log`; start the daemon with
+  `NOXFM_LOG=debug noxd` for more).

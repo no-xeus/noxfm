@@ -1,6 +1,7 @@
 # Window rewrite: libcosmic → GTK4
 
-**Status:** in progress (started 2026-10-09).
+**Status:** done (2026-10-09). The GTK4 window is `crates/noxfm`; libcosmic
+and its patched clone are no longer used.
 
 ## Why
 
@@ -10,7 +11,7 @@ from the toolkit, not from noxfm:
 - Context-menu crashes (`index out of bounds` in `button/widget.rs`,
   `Downcast on stateless state`): libcosmic's `close_all` kept a destroyed
   popup's id, so the next menu was laid out against stale widget trees.
-  Patched for now in a local fork (see `[patch]` in `Cargo.toml`).
+  It was patched in a local fork while the rewrite went on.
 - Drag and drop does nothing on Hyprland (`docs/known-issues.md`).
 - Widget state moves between widgets when the view's shape changes (the
   spacers kept in `view()` to avoid that).
@@ -25,32 +26,22 @@ carries file lists, and list/grid views that only build visible rows.
 - **Shared:** `noxfm_core::fmt` (sizes, dates, icon names) and
   `noxfm_core::preview` (preview loader) moved out of the libcosmic crate.
   `noxfm_core::compare` is the sort order both UIs use.
-- **New:** `crates/noxfm-gtk` (binary `noxfm-gtk`), plain gtk4-rs. The daemon
+- **New:** `crates/noxfm` (was `crates/noxfm-gtk` during the rewrite), plain gtk4-rs. The daemon
   `Client` runs on a tokio thread; replies and events reach the GTK main loop
   through futures and a channel.
 - **Replaced by GTK:** `selection.rs` (GTK selection models), `icons.rs`
   (GTK icon theme), `clipboard.rs` (`gdk::FileList` plus
   `x-special/gnome-copied-files`), libcosmic header bar and theme.
-- **Removed at the end:** `crates/noxfm` and every libcosmic dependency.
-  Packaging then depends on `gtk4` and no longer builds wgpu.
+- **Removed:** the libcosmic window and every libcosmic dependency, with
+  the `[patch]` pointing at the local clone. Packaging depends on `gtk4` and
+  no longer builds wgpu.
 
 ## Tests
 
-`cargo test -p noxfm-gtk` drives a real window against a headless noxd on
+`cargo test -p noxfm` drives a real window against a headless noxd on
 an offscreen display (`gtk4-broadwayd`, from the gtk4 package; skipped when
 missing). Input can't be injected there, so it calls what keys and menus
 call. Drag and drop, and how things look, still need a manual check.
-
-## Running it during the rewrite
-
-```sh
-cargo build
-NOXFM_WINDOW_BIN=noxfm-gtk target/debug/noxd   # noxd opens GTK windows
-target/debug/noxfm                              # the launcher still asks noxd for a window
-```
-
-When the GTK window reaches parity, it takes the binary name `noxfm` and
-`NOXFM_WINDOW_BIN` goes away.
 
 ## Phases
 
@@ -80,7 +71,7 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
    (Space; images whole, text and hex), transfers (indicator in the status
    line, list with Cancel/Dismiss), app picker, health banner, badges
    (default app on file icons, "git", content/extension mismatch).
-6. **Switch.** Rename binary, delete `crates/noxfm` and the libcosmic patch,
+6. ✅ **Switch.** Rename binary, delete `crates/noxfm` and the libcosmic patch,
    update PKGBUILDs, CHANGELOG, `docs/install.md`, `docs/known-issues.md`.
 
 ## Feedback to address in the new window
@@ -97,5 +88,4 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
   window process, so a root window sees root's rights. A root window would
   need its own daemon (another runtime dir); a polkit "open as
   administrator" may fit better.
-- Context-menu crashes with multiple selection — fixed in the libcosmic fork;
-  gone by construction in GTK.
+- Context-menu crashes with multiple selection — gone with libcosmic.

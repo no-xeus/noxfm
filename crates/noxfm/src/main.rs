@@ -1,20 +1,29 @@
 //! `noxfm [PATH]` asks the daemon to open a window (starting noxd if needed).
-//! `noxfm --window [--recent[=KIND]|--trash] [PATH]` is the window itself;
-//! only noxd runs it that way.
+//! `noxfm --window [--recent[=KIND]|--trash] [--sidebar=…] [PATH]` is the
+//! window itself (GTK4); only noxd runs it that way, with its stderr going to
+//! `~/.local/state/noxfm/windows.log`.
 
-use noxfm::browser;
+mod cells;
+mod clipboard;
+mod complete;
+mod daemon;
+mod grid;
+mod list;
+mod window;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::Context;
+use gtk::prelude::*;
+use gtk::{gio, glib};
 use noxfm_proto::{Client, Request, Role};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<glib::ExitCode> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("{}", noxfm_proto::version_line("noxfm"));
-        return Ok(());
+        return Ok(glib::ExitCode::SUCCESS);
     }
     let mut args = std::env::args_os().skip(1).peekable();
     let window = args.next_if(|a| a == "--window").is_some();
@@ -33,17 +42,24 @@ fn main() -> anyhow::Result<()> {
         None => std::env::current_dir()?,
     };
 
-    if window {
-        // Windows run as children of noxd and inherit its environment; their
-        // stderr goes to ~/.local/state/noxfm/windows.log.
-        env_logger::Builder::from_env(env_logger::Env::new().filter_or("NOXFM_LOG", "warn")).init();
-        let flags = browser::Flags { socket: noxfm_proto::socket_path(), start: path, view, layout };
-        let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(1000.0, 700.0));
-        cosmic::app::run::<browser::App>(settings, flags)?;
-        Ok(())
-    } else {
-        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(launch(path))
+    if !window {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(launch(path))?;
+        return Ok(glib::ExitCode::SUCCESS);
     }
+
+    env_logger::Builder::from_env(env_logger::Env::new().filter_or("NOXFM_LOG", "warn")).init();
+    let (daemon, conn) = daemon::Daemon::start(noxfm_proto::socket_path());
+    // One window per process, as noxd starts them: no single-instance handoff.
+    let app = gtk::Application::builder()
+        .application_id("dev.noxfm.Browser")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    window::set_accels(&app);
+    app.connect_activate(move |app| {
+        window::Browser::open(app, daemon.clone(), conn.clone(), window::start_loc(view, path.clone()), layout);
+    });
+    // Arguments were handled above; GApplication would reject ours.
+    Ok(app.run_with_args::<&str>(&[]))
 }
 
 async fn launch(path: PathBuf) -> anyhow::Result<()> {

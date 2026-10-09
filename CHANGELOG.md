@@ -8,20 +8,27 @@ All notable changes. Versions follow [semantic versioning](https://semver.org):
 ## [Unreleased]
 
 ### Changed
+- The windows are now GTK4 (they were libcosmic). Same daemon, same
+  features, plus: tabs reorder by dragging; images in the preview panel;
+  Properties open in windows of their own; the Recent view keeps its
+  newest-first order until a column is clicked. The package depends on
+  `gtk4` instead of Wayland/Vulkan libraries.
+- Ctrl + / Ctrl − (and Ctrl + wheel) make items bigger or smaller.
+- Cut items stay dimmed until they're pasted or the clipboard changes.
+- Path suggestions show above the content instead of pushing it down.
 - Folder sizes are kept across restarts (`~/.cache/noxfm/sizes`): they show
   at once and are refreshed in the background.
 - Measuring a folder also measures the folders up to two levels inside it,
   so opening one of them shows its sizes right away.
 - Protocol version 2: noxd reports renamed and moved-back items
   (`Event::Moved`), so a window showing a folder inside one follows it.
-- Work started on a GTK4 window replacing the libcosmic one
-  ([docs/ui-rewrite.md](docs/ui-rewrite.md)); try it with
-  `NOXFM_WINDOW_BIN=noxfm-gtk noxd`.
 
 ### Fixed
 - Crash when opening a context menu after using one, once the selection had
   changed (for example from one file to several, or after clicking a folder
-  in the sidebar). Fixed in libcosmic, built from a patched clone.
+  in the sidebar).
+- Drag and drop between windows did nothing on Hyprland (to confirm on
+  Hyprland with the GTK4 window).
 - Undoing the rename of the folder you're in left the window on a path that
   no longer existed.
 
