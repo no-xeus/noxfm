@@ -61,8 +61,7 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
 2. ✅ **Views.** Icon grid, Ctrl+1/Ctrl+2, zoom (Ctrl + / Ctrl − / Ctrl+wheel),
    keyboard navigation, rubber-band selection, hidden files, created date,
    owner/permissions columns, thumbnails, path completion in a popover above
-   the content. Not carried over yet: the default app's icon on file icons
-   (FastOpen badge), git badge, mime-mismatch warning — with phase 5 panels.
+   the content.
 3. ✅ **Actions.** Context menus (items, background), clipboard with cut
    hint (cut items dimmed until pasted or replaced), paste and paste as link,
    drag and drop (in, out, onto folders), rename in place, new
@@ -75,8 +74,12 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
    disks; folding shared through noxd, resizable, F9), Recent (newest first)
    and Trash views with their menus, mounting, mount rules, "mount this?"
    banners. Disk and partition Properties come with phase 5.
-5. **Panels.** Properties (files, folders, partitions, disks), preview panel,
-   transfers, app picker and other dialogs, health banner.
+5. ✅ **Panels.** Properties in small windows of their own (files and
+   folders with sizes, dates, owner, permission check boxes, default app
+   and "Change…", git; several items; partitions; disks), preview panel
+   (Space; images whole, text and hex), transfers (indicator in the status
+   line, list with Cancel/Dismiss), app picker, health banner, badges
+   (default app on file icons, "git", content/extension mismatch).
 6. **Switch.** Rename binary, delete `crates/noxfm` and the libcosmic patch,
    update PKGBUILDs, CHANGELOG, `docs/install.md`, `docs/known-issues.md`.
 

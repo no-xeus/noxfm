@@ -579,7 +579,7 @@ impl cosmic::Application for App {
 
         col = col.push(body.height(Length::Fill));
         if self.show_transfers && !self.jobs.is_empty() {
-            let tab = self.jobs.view(Message::CancelTransfer, Message::DismissTransfer);
+            let tab = crate::transfers::view(&self.jobs, Message::CancelTransfer, Message::DismissTransfer);
             col = col.push(
                 widget::container(tab)
                     .padding(space.space_xs)

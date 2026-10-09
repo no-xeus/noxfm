@@ -23,7 +23,7 @@ pub(super) const SORT_KEYS: [(&str, &str, SortKey); 5] = [
 
 /// Shortcuts that act on the items, attached to the views only, so they
 /// never take keys from the path bar. Shown next to the menu items.
-const VIEW_KEYS: [(&str, &str); 11] = [
+const VIEW_KEYS: [(&str, &str); 12] = [
     ("<Control>x", "win.cut"),
     ("<Control>c", "win.copy"),
     ("<Control><Shift>c", "win.copy-path"),
@@ -35,6 +35,7 @@ const VIEW_KEYS: [(&str, &str); 11] = [
     ("<Shift>Delete", "win.delete"),
     ("<Control><Shift>n", "win.new-folder"),
     ("Menu", "win.context-menu"),
+    ("<Alt>Return", "win.properties"),
 ];
 
 fn accel_of(action: &str) -> Option<&'static str> {
@@ -70,7 +71,7 @@ fn submenu(label: &str, menu: &gio::Menu) -> gio::MenuItem {
 impl Browser {
     pub(super) fn install_file_actions(self: &Rc<Self>) {
         type Run = fn(&Rc<Pane>);
-        let on_pane: [(&str, Run); 26] = [
+        let on_pane: [(&str, Run); 28] = [
             ("open", Pane::open_selection),
             ("cut", |p| p.to_clipboard(TransferOp::Move)),
             ("copy", |p| p.to_clipboard(TransferOp::Copy)),
@@ -103,6 +104,19 @@ impl Browser {
             ("forget-recent", Pane::forget_recent),
             ("open-location", Pane::open_location),
             ("context-menu", |p| p.browser().keyboard_menu(p)),
+            ("properties", |p| {
+                let mut paths = p.selected_list();
+                if paths.is_empty() && p.in_folder() {
+                    paths.push(p.here());
+                }
+                p.browser().show_properties(paths);
+            }),
+            ("open-with-other", |p| {
+                if let [e] = p.selected_entries().as_slice() {
+                    let mime = e.mime.clone().unwrap_or_else(|| "application/octet-stream".into());
+                    p.browser().app_picker(mime, Some(e.path.clone()));
+                }
+            }),
         ];
         for (name, run) in on_pane {
             self.add_action(&gio::SimpleAction::new(name, None), move |b, _, _| run(&b.pane()));
@@ -181,6 +195,11 @@ impl Browser {
                 keys.add_shortcut(gtk::Shortcut::new(gtk::ShortcutTrigger::parse_string(trigger), Some(gtk::NamedAction::new(action))));
             }
             view.add_controller(keys);
+            // Space toggles the preview; before the list items, which take it.
+            let space = gtk::ShortcutController::new();
+            space.set_propagation_phase(gtk::PropagationPhase::Capture);
+            space.add_shortcut(gtk::Shortcut::new(gtk::ShortcutTrigger::parse_string("space"), Some(gtk::NamedAction::new("win.preview"))));
+            view.add_controller(space);
 
             // Right press: an item outside the selection becomes the
             // selection (as in Explorer); the background clears it.
@@ -260,9 +279,11 @@ impl Browser {
             for (i, a) in p.open_with.borrow().1.iter().enumerate() {
                 apps.append_item(&indexed(&a.name, "win.open-with", i));
             }
-            if apps.n_items() > 0 {
-                open.append_submenu(Some("Open with"), &apps);
-            }
+            let other = section([item("Other application…", "win.open-with-other")]);
+            let with = gio::Menu::new();
+            with.append_section(None, &apps);
+            with.append_section(None, &other);
+            open.append_submenu(Some("Open with"), &with);
             if first.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
                 open.append_item(&item("Extract here", "win.extract"));
             }
@@ -311,6 +332,7 @@ impl Browser {
         change.push(item("Move to Trash", "win.trash"));
         change.push(item("Delete permanently…", "win.delete"));
         menu.append_section(None, &section(change));
+        menu.append_section(None, &section([item("Properties", "win.properties")]));
         menu
     }
 
@@ -357,6 +379,7 @@ impl Browser {
         new.append_section(None, &templates);
         let pin = if self.is_pinned(&p.here()) { item("Unpin from sidebar", "win.unpin") } else { item("Pin to sidebar", "win.pin") };
         menu.append_section(None, &section([submenu("New", &new), item("Open in terminal", "win.open-terminal"), pin]));
+        menu.append_section(None, &section([item("Properties", "win.properties")]));
         menu
     }
 }

@@ -7,6 +7,7 @@ pub mod devices;
 pub mod filetype;
 pub mod fmt;
 pub mod fskind;
+pub mod jobs;
 pub mod listing;
 pub mod moves;
 pub mod perms;

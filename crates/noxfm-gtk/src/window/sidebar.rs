@@ -63,7 +63,7 @@ impl Browser {
 
     pub(super) fn install_sidebar_actions(self: &Rc<Self>) {
         type Run = fn(&Rc<Browser>, usize);
-        let indexed: [(&str, Run); 6] = [
+        let indexed: [(&str, Run); 8] = [
             ("place-new-window", |b, i| {
                 if let Some(p) = b.places.borrow().get(i) {
                     b.open_window(Loc::Dir(p.path.clone()));
@@ -86,6 +86,20 @@ impl Browser {
             ("device-copy-path", |b, i| {
                 if let Some(d) = b.devices.borrow().get(i) {
                     b.window.clipboard().set_text(&d.device);
+                }
+            }),
+            ("device-properties", |b, i| {
+                let d = b.devices.borrow().get(i).cloned();
+                if let Some(d) = d {
+                    b.show_partition_properties(&d);
+                }
+            }),
+            // Any partition of the disk stands for it.
+            ("disk-properties", |b, i| {
+                let all = b.devices.borrow().clone();
+                let key = all.get(i).map(devices::disk_key);
+                if let Some(disk) = key.and_then(|k| devices::find_disk(&all, &k)) {
+                    b.show_disk_properties(&disk);
                 }
             }),
         ];
@@ -210,7 +224,9 @@ impl Browser {
             }
             for disk in disks {
                 let disk_folded = folded(&disk.key);
-                self.sidebar.append(&self.disk_header(&disk, disk_folded));
+                let header = self.disk_header(&disk, disk_folded);
+                self.attach_menu(&header, &section([idx_item("Properties", "win.disk-properties", disk.parts[0].0)]));
+                self.sidebar.append(&header);
                 if !disk_folded {
                     for (i, d) in &disk.parts {
                         self.sidebar.append(&self.partition_row(*i, d, current.as_ref()));
@@ -326,6 +342,7 @@ impl Browser {
             menu.append_section(None, &rules);
         }
         menu.append_section(None, &section([idx_item("Copy device path", "win.device-copy-path", i)]));
+        menu.append_section(None, &section([idx_item("Properties", "win.device-properties", i)]));
         self.attach_menu(&row, &menu);
         row
     }
@@ -335,6 +352,7 @@ impl Browser {
         while let Some(child) = self.banners.first_child() {
             self.banners.remove(&child);
         }
+        self.health_banner();
         let asking: Vec<(usize, Device)> = self.devices.borrow().iter().cloned().enumerate().filter(|(_, d)| d.asking).collect();
         for (i, d) in asking {
             let row = gtk::Box::builder().spacing(8).build();
@@ -368,6 +386,40 @@ impl Browser {
             row.append(&later);
             self.banners.append(&row);
         }
+    }
+}
+
+impl Browser {
+    /// "Some features are unavailable", with what to install.
+    fn health_banner(self: &Rc<Self>) {
+        let missing = self.missing.borrow().clone();
+        if missing.is_empty() {
+            return;
+        }
+        let row = gtk::Box::builder().spacing(10).build();
+        row.add_css_class("ask-banner");
+        row.append(&icon(&["dialog-warning", "dialog-warning-symbolic"], 24));
+        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).build();
+        let title = gtk::Label::builder().label("Some features are unavailable").xalign(0.0).build();
+        title.add_css_class("heading");
+        text.append(&title);
+        for m in &missing {
+            let l = gtk::Label::builder().label(format!("• {} — {}", m.feature, m.detail)).xalign(0.0).wrap(true).build();
+            l.add_css_class("caption");
+            text.append(&l);
+        }
+        row.append(&text);
+        let dismiss = gtk::Button::builder().label("Dismiss").valign(gtk::Align::Center).build();
+        let weak = Rc::downgrade(self);
+        dismiss.connect_clicked(move |_| {
+            if let Some(b) = weak.upgrade() {
+                b.missing.borrow_mut().clear();
+                b.refresh_banners();
+                b.pane().fire(Request::DismissHealth);
+            }
+        });
+        row.append(&dismiss);
+        self.banners.append(&row);
     }
 }
 

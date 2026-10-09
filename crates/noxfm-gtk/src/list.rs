@@ -7,7 +7,7 @@ use gtk::prelude::*;
 use noxfm_core::{SortKey, fmt};
 use noxfm_proto::Entry;
 
-use crate::cells::{Cells, entry_of};
+use crate::cells::{self, Cells, entry_of};
 
 pub struct ListView {
     pub view: gtk::ColumnView,
@@ -153,8 +153,10 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
     let f = gtk::SignalListItemFactory::new();
     f.connect_setup(|_, item| {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Image::new());
+        row.append(&cells::icon_slot());
         row.append(&label());
+        row.append(&cells::git_badge());
+        row.append(&cells::mismatch_mark());
         let caption = label();
         caption.add_css_class("caption");
         caption.add_css_class("dim-label");
@@ -164,13 +166,12 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
     let c = cells.clone();
     f.connect_bind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let (image, label) = parts(item);
+        let (slot, label, git, mismatch, caption) = parts(item);
         let obj = item.item().unwrap();
         let e = entry_of(&obj);
-        image.set_pixel_size(c.list_px());
-        c.bind_icon(&image, &e);
+        c.bind_slot(&slot, &e, c.list_px());
         label.set_text(&e.name);
-        let caption = label.next_sibling().and_downcast::<gtk::Label>().unwrap();
+        cells::bind_marks(&git, Some(&mismatch), &e);
         let text = c.caption(&e.path);
         caption.set_visible(text.is_some());
         caption.set_text(text.as_deref().unwrap_or_default());
@@ -180,7 +181,7 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
     f.connect_unbind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         if let Some(obj) = item.item() {
-            c.unbind_icon(&parts(item).0, &entry_of(&obj).path);
+            c.unbind_slot(&parts(item).0, &entry_of(&obj).path);
         }
         if let Some(child) = item.child() {
             c.disown(&child);
@@ -189,10 +190,14 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
     f
 }
 
-fn parts(item: &gtk::ListItem) -> (gtk::Image, gtk::Label) {
-    let image = item.child().and_then(|r| r.first_child()).and_downcast::<gtk::Image>().unwrap();
-    let label = image.next_sibling().and_downcast::<gtk::Label>().unwrap();
-    (image, label)
+/// Icon slot, name, git badge, mismatch mark, caption.
+fn parts(item: &gtk::ListItem) -> (gtk::Widget, gtk::Label, gtk::Label, gtk::Image, gtk::Label) {
+    let slot = item.child().and_then(|r| r.first_child()).unwrap();
+    let label = slot.next_sibling().and_downcast::<gtk::Label>().unwrap();
+    let git = label.next_sibling().and_downcast::<gtk::Label>().unwrap();
+    let mismatch = git.next_sibling().and_downcast::<gtk::Image>().unwrap();
+    let caption = mismatch.next_sibling().and_downcast::<gtk::Label>().unwrap();
+    (slot, label, git, mismatch, caption)
 }
 
 /// Size cells change in place when a folder's size arrives.

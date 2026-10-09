@@ -223,7 +223,7 @@ impl App {
                 .push(widget::text::body(value).width(Length::Fill))
                 .into()
         };
-        let size = |bytes: u64| format!("{} ({} bytes)", fmt::size(bytes), group_digits(bytes));
+        let size = |bytes: u64| format!("{} ({} bytes)", fmt::size(bytes), fmt::group_digits(bytes));
 
         match &props.entry {
             Some(e) => {
@@ -336,7 +336,7 @@ fn partition_body<'a>(d: &noxfm_proto::Device) -> Element<'a, Message> {
         col = col.push(info_row("UUID", u.clone()));
     }
     col = col.push(widget::divider::horizontal::light());
-    col = col.push(info_row("Size", format!("{} ({} bytes)", fmt::size(d.size), group_digits(d.size))));
+    col = col.push(info_row("Size", format!("{} ({} bytes)", fmt::size(d.size), fmt::group_digits(d.size))));
     match (&d.mount_point, d.free) {
         (Some(mp), free) => {
             if let Some(free) = free {
@@ -362,7 +362,7 @@ fn partition_body<'a>(d: &noxfm_proto::Device) -> Element<'a, Message> {
 
 fn disk_body<'a>(disk: &super::sidebar::Disk<'_>) -> Element<'a, Message> {
     let mut col = widget::column::with_capacity(10).spacing(6);
-    col = col.push(info_row("Size", format!("{} ({} bytes)", fmt::size(disk.size), group_digits(disk.size))));
+    col = col.push(info_row("Size", format!("{} ({} bytes)", fmt::size(disk.size), fmt::group_digits(disk.size))));
     let connection = if disk.image { "Disk image" } else if disk.external { "Plugged in" } else { "Internal" };
     col = col.push(info_row("Connection", connection.into()));
     col = col.push(widget::divider::horizontal::light());
@@ -388,32 +388,12 @@ fn name_of(p: &Path) -> String {
 }
 
 fn contains(p: &Props) -> String {
-    let plural = |n: u64, one: &str, many: &str| format!("{} {}", group_digits(n), if n == 1 { one } else { many });
+    let plural = |n: u64, one: &str, many: &str| format!("{} {}", fmt::group_digits(n), if n == 1 { one } else { many });
     format!("{}, {}", plural(p.files, "file", "files"), plural(p.folders, "folder", "folders"))
-}
-
-/// `1234567` -> `1,234,567`
-pub fn group_digits(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::with_capacity(s.len() + s.len() / 3);
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn digits() {
-        assert_eq!(super::group_digits(0), "0");
-        assert_eq!(super::group_digits(999), "999");
-        assert_eq!(super::group_digits(1_234_567), "1,234,567");
-    }
-
     #[test]
     fn centred() {
         let (x, y) = super::centre_origin(cosmic::iced::Size::new(1000.0, 700.0));

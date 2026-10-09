@@ -30,6 +30,21 @@ fn names(p: &Pane) -> Vec<String> {
     (0..p.selection.n_items()).filter_map(|i| p.selection.item(i)).map(|o| entry_of(&o).name.clone()).collect()
 }
 
+/// `w` and everything inside it.
+fn descendants(w: &gtk::Widget) -> Vec<gtk::Widget> {
+    let mut out = vec![w.clone()];
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        out.extend(descendants(&c));
+        child = c.next_sibling();
+    }
+    out
+}
+
+fn find<W: IsA<gtk::Widget>>(w: &impl IsA<gtk::Widget>) -> Vec<W> {
+    descendants(w.upcast_ref()).into_iter().filter_map(|d| d.downcast::<W>().ok()).collect()
+}
+
 fn action(b: &Browser, name: &str, param: Option<&glib::Variant>) {
     WidgetExt::activate_action(&b.window, name, param).unwrap();
 }
@@ -206,6 +221,51 @@ fn file_actions_end_to_end() {
     assert!(b.item_menu(&p).n_items() >= 4);
     p.selection.unselect_all();
     assert!(b.background_menu(&p).n_items() >= 3);
+
+    // Properties: totals arrive, permissions change the file.
+    use std::os::unix::fs::PermissionsExt;
+    let file = dir.join("a2/b.txt");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let props = b.show_properties(vec![file.clone()]).unwrap();
+    wait_for("properties filled", || find::<gtk::CheckButton>(&props).len() == 9);
+    let owner_write = &find::<gtk::CheckButton>(&props)[1];
+    assert!(owner_write.is_active());
+    owner_write.set_active(false);
+    wait_for("chmod", || std::fs::metadata(&file).unwrap().permissions().mode() & 0o777 == 0o444);
+    props.destroy();
+
+    // Preview of a text file.
+    std::fs::write(dir.join("a2/notes.txt"), "hello preview").unwrap();
+    wait_for("notes listed", || names(&p).contains(&"notes.txt".to_owned()));
+    action(&b, "win.preview", None);
+    p.select_only(&dir.join("a2/notes.txt"));
+    wait_for("preview text", || {
+        find::<gtk::TextView>(&b.preview).first().is_some_and(|t| {
+            let buf = t.buffer();
+            buf.text(&buf.start_iter(), &buf.end_iter(), false) == "hello preview"
+        })
+    });
+    action(&b, "win.preview", None);
+    assert!(!b.preview.is_visible());
+
+    // A copy shows in the transfers indicator, then goes.
+    std::fs::write(dir.join("big.bin"), vec![7u8; 8 << 20]).unwrap();
+    p.transfer(TransferOp::Copy, vec![dir.join("big.bin")], dir.join("sub"));
+    wait_for("transfer shown", || b.transfers_button.is_visible());
+    wait_for("transfer done", || dir.join("sub/big.bin").metadata().is_ok_and(|m| m.len() == 8 << 20));
+    wait_for("transfer cleared", || !b.transfers_button.is_visible());
+
+    // The app picker opens (its list comes from the system).
+    let picker = b.app_picker("text/plain".into(), Some(dir.join("a2/notes.txt")));
+    assert!(!find::<gtk::ListBox>(&picker).is_empty());
+    picker.destroy();
+
+    // Repositories get a "git" badge.
+    std::fs::create_dir_all(dir.join("a2/repo/.git")).unwrap();
+    action(&b, "win.view", Some(&"list".to_variant()));
+    wait_for("git badge", || {
+        find::<gtk::Label>(&p.list.view).iter().any(|l| l.text() == "git" && l.is_visible())
+    });
 
     b.window.destroy();
 }

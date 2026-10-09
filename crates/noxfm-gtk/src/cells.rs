@@ -23,6 +23,61 @@ pub fn entry_of(obj: &glib::Object) -> Ref<'_, Entry> {
     obj.downcast_ref::<glib::BoxedAnyObject>().expect("list items are entries").borrow::<Entry>()
 }
 
+/// An item's icon, with room for its default app's icon in the corner.
+pub fn icon_slot() -> gtk::Overlay {
+    let slot = gtk::Overlay::new();
+    slot.set_child(Some(&gtk::Image::new()));
+    slot.add_overlay(&gtk::Image::builder().halign(gtk::Align::Start).valign(gtk::Align::End).visible(false).build());
+    slot
+}
+
+/// The icon and the badge of an [`icon_slot`].
+pub fn slot_parts(slot: &gtk::Widget) -> (gtk::Image, gtk::Image) {
+    let slot = slot.downcast_ref::<gtk::Overlay>().expect("an icon slot");
+    let icon = slot.child().and_downcast::<gtk::Image>().unwrap();
+    // GTK keeps overlays before the main child: the badge is the other one.
+    let badge = std::iter::successors(slot.first_child(), |w| w.next_sibling())
+        .find(|w| w != icon.upcast_ref::<gtk::Widget>())
+        .and_downcast::<gtk::Image>()
+        .unwrap();
+    (icon, badge)
+}
+
+fn app_icon(app: &noxfm_proto::AppRef) -> gio::Icon {
+    match &app.icon {
+        Some(i) if i.starts_with('/') => gio::FileIcon::new(&gio::File::for_path(i)).upcast(),
+        Some(i) => gio::ThemedIcon::from_names(&[i.as_str(), "application-x-executable"]).upcast(),
+        None => gio::ThemedIcon::new("application-x-executable").upcast(),
+    }
+}
+
+/// "git" next to repositories (shown when the entry is one).
+pub fn git_badge() -> gtk::Label {
+    let l = gtk::Label::builder().label("git").visible(false).valign(gtk::Align::Center).build();
+    l.add_css_class("badge");
+    l
+}
+
+/// A warning when the content doesn't match the extension.
+pub fn mismatch_mark() -> gtk::Image {
+    gtk::Image::builder().icon_name("dialog-warning-symbolic").pixel_size(14).visible(false).build()
+}
+
+pub fn bind_marks(git: &gtk::Label, mismatch: Option<&gtk::Image>, e: &Entry) {
+    git.set_visible(e.is_git);
+    if let Some(m) = mismatch {
+        m.set_visible(e.mime_mismatch);
+        if e.mime_mismatch {
+            let tip = format!(
+                "Content is {}, which doesn't match the .{} extension",
+                e.mime.as_deref().unwrap_or("?"),
+                e.extension().unwrap_or("")
+            );
+            m.set_tooltip_text(Some(&tip));
+        }
+    }
+}
+
 pub fn size_text(e: &Entry) -> String {
     match (e.kind, e.size) {
         (_, Some(b)) => fmt::size(b),
@@ -105,6 +160,30 @@ impl Cells {
         if e.kind == EntryKind::File && e.mime.as_deref().is_some_and(noxfm_core::thumbnail::supported) {
             self.request_thumbnail(e.path.clone(), e.modified);
         }
+    }
+
+    /// Icon (or thumbnail) at `px`, with the default app's icon in the
+    /// bottom-left corner of files.
+    pub fn bind_slot(self: &Rc<Self>, slot: &gtk::Widget, e: &Entry, px: i32) {
+        let (icon, badge) = slot_parts(slot);
+        icon.set_pixel_size(px);
+        self.bind_icon(&icon, e);
+        match e.app.as_ref().filter(|_| e.kind == EntryKind::File) {
+            Some(app) => {
+                badge.set_from_gicon(&app_icon(app));
+                badge.set_pixel_size((px * 45 / 100).max(10));
+                badge.set_visible(true);
+                slot.set_tooltip_text(Some(&format!("Opens with {}", app.name)));
+            }
+            None => {
+                badge.set_visible(false);
+                slot.set_tooltip_text(None);
+            }
+        }
+    }
+
+    pub fn unbind_slot(&self, slot: &gtk::Widget, path: &Path) {
+        self.unbind_icon(&slot_parts(slot).0, path);
     }
 
     pub fn unbind_icon(&self, image: &gtk::Image, path: &Path) {

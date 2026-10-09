@@ -67,6 +67,19 @@ pub fn duration(secs: u64) -> String {
     }
 }
 
+/// `1234567` -> `1,234,567`
+pub fn group_digits(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Freedesktop icon names to try, most specific first.
 pub fn icon_names(e: &Entry) -> Vec<String> {
     match e.kind {
@@ -90,6 +103,8 @@ mod tests {
     #[test]
     fn sizes() {
         assert_eq!(super::size(0), "0 B");
+        assert_eq!(super::group_digits(999), "999");
+        assert_eq!(super::group_digits(1_234_567), "1,234,567");
         assert_eq!(super::size(1536), "1.5 KiB");
         assert_eq!(super::size(5 * 1024 * 1024 * 1024), "5.0 GiB");
         assert_eq!(super::duration(75), "1m 15s");

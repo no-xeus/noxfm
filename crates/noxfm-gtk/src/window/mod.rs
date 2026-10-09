@@ -1,22 +1,27 @@
 //! The browser window: tabs (each a folder, Recent or the Trash), a
 //! sidebar, the path bar and a status line.
 
+mod apps;
 mod dnd;
 mod menu;
 mod ops;
 mod pane;
+mod preview;
+mod properties;
 mod rename;
 mod sidebar;
 mod tabs;
+mod transfers;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use noxfm_proto::{Device, Event, Place, Request, Response, StartView, WindowLayout};
+use noxfm_core::jobs::Jobs;
+use noxfm_proto::{Device, Event, HealthCheck, Place, Request, Response, StartView, WindowLayout};
 
 use crate::complete::Completion;
 use crate::daemon::{Conn, Daemon};
@@ -88,12 +93,26 @@ pub(crate) struct Browser {
     cut: RefCell<HashSet<PathBuf>>,
     /// Right-click menus of sidebar rows, unparented on each rebuild.
     sidebar_menus: RefCell<Vec<gtk::PopoverMenu>>,
+    /// The preview panel (hidden unless asked for) and what it shows.
+    preview: gtk::Box,
+    preview_path: RefCell<Option<PathBuf>>,
+    jobs: RefCell<Jobs>,
+    /// The job list, its panel, and the status-line indicator opening it.
+    transfers: gtk::Box,
+    transfers_revealer: gtk::Revealer,
+    transfers_button: gtk::Button,
+    transfer_rows: RefCell<HashMap<u64, transfers::TransferRow>>,
+    /// Removing finished jobs as they expire.
+    ticking: Cell<bool>,
+    /// Missing dependencies to tell about (empty once dismissed).
+    missing: RefCell<Vec<HealthCheck>>,
 }
 
 const CSS: &str = "
 .drop-target { background-color: alpha(@accent_bg_color, 0.25); border-radius: 6px; }
 .sidebar-active { background-color: alpha(@accent_bg_color, 0.2); }
 .ask-banner { padding: 8px; margin: 0 6px 6px 6px; border-radius: 8px; background-color: alpha(@accent_bg_color, 0.12); }
+.badge { font-size: smaller; padding: 0 6px; border-radius: 6px; background-color: alpha(currentColor, 0.1); }
 ";
 
 fn view_menu() -> gio::Menu {
@@ -112,6 +131,7 @@ fn view_menu() -> gio::Menu {
     show.append(Some("Date created"), Some("win.show-created"));
     show.append(Some("Owner and permissions"), Some("win.show-details"));
     show.append(Some("Sidebar"), Some("win.toggle-sidebar"));
+    show.append(Some("Preview panel"), Some("win.preview"));
     menu.append_section(Some("Show"), &show);
     menu
 }
@@ -138,17 +158,39 @@ impl Browser {
         let completion = Completion::attach(&path_bar, daemon.clone());
         let status = gtk::Label::builder().xalign(0.0).margin_start(8).margin_end(8).margin_top(4).margin_bottom(4).build();
         status.add_css_class("caption");
-        let notebook = gtk::Notebook::builder().show_border(false).scrollable(true).vexpand(true).build();
+        let notebook = gtk::Notebook::builder().show_border(false).scrollable(true).vexpand(true).hexpand(true).build();
         notebook.set_group_name(Some("noxfm-tabs"));
         let banners = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let bar = gtk::Box::builder().margin_start(6).margin_end(6).margin_top(6).margin_bottom(6).build();
         bar.append(&path_bar);
+        let preview = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .width_request(380)
+            .margin_start(8)
+            .margin_end(8)
+            .visible(false)
+            .build();
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row.append(&notebook);
+        row.append(&preview);
+        let transfers = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).margin_start(12).margin_end(12).margin_top(8).margin_bottom(8).build();
+        let transfers_revealer = gtk::Revealer::builder()
+            .child(&gtk::ScrolledWindow::builder().child(&transfers).propagate_natural_height(true).max_content_height(240).build())
+            .build();
+        let transfers_button = gtk::Button::builder().visible(false).action_name("win.transfers").build();
+        transfers_button.add_css_class("flat");
+        let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        status.set_hexpand(true);
+        status_row.append(&status);
+        status_row.append(&transfers_button);
         main.append(&bar);
         main.append(&banners);
-        main.append(&notebook);
-        main.append(&status);
+        main.append(&row);
+        main.append(&transfers_revealer);
+        main.append(&status_row);
 
         let sidebar = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).margin_start(4).margin_end(4).build();
         let side_scroll = gtk::ScrolledWindow::builder().child(&sidebar).hscrollbar_policy(gtk::PolicyType::Never).build();
@@ -208,6 +250,15 @@ impl Browser {
             undo_label: RefCell::default(),
             cut: RefCell::default(),
             sidebar_menus: RefCell::default(),
+            preview,
+            preview_path: RefCell::default(),
+            jobs: RefCell::default(),
+            transfers,
+            transfers_revealer,
+            transfers_button,
+            transfer_rows: RefCell::default(),
+            ticking: Cell::new(false),
+            missing: RefCell::default(),
         });
         this.install_actions();
         this.install_file_actions();
@@ -250,7 +301,7 @@ impl Browser {
 
     fn install_actions(self: &Rc<Self>) {
         type Run = fn(&Rc<Browser>);
-        let plain: [(&str, Run); 13] = [
+        let plain: [(&str, Run); 14] = [
             ("back", |b| b.pane().go_back()),
             ("forward", |b| b.pane().go_forward()),
             ("up", |b| b.pane().go_up()),
@@ -271,6 +322,7 @@ impl Browser {
             ("close-tab", |b| b.close_tab(&b.pane())),
             ("next-tab", |b| b.cycle_tab(1)),
             ("prev-tab", |b| b.cycle_tab(-1)),
+            ("transfers", |b| b.toggle_transfers()),
         ];
         for (name, run) in plain {
             self.add_action(&gio::SimpleAction::new(name, None), move |b, _, _| run(b));
@@ -292,6 +344,13 @@ impl Browser {
         });
 
         // On/off options, shown as check items in the View menu.
+        let preview = gio::SimpleAction::new_stateful("preview", None, &false.to_variant());
+        self.add_action(&preview, |b, a, _| {
+            let on = !a.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+            a.set_state(&on.to_variant());
+            b.toggle_preview(on);
+        });
+
         type Toggle = fn(&mut ViewOpts, bool);
         let toggles: [(&str, Toggle); 3] = [
             ("show-hidden", |o, on| o.show_hidden = on),
@@ -413,6 +472,7 @@ impl Browser {
         drop(st);
         self.status.set_text(&p.status_text());
         self.sync_sort_actions(&p);
+        self.refresh_preview();
         if moved {
             self.refresh_sidebar();
         }
@@ -429,7 +489,15 @@ impl Browser {
                 }
                 self.load_places();
                 self.load_devices();
+                self.load_transfers();
                 let p = self.pane();
+                let weak = Rc::downgrade(self);
+                p.request_then(Request::Health, move |_, r| {
+                    if let (Some(b), Response::Health { checks, dismissed: false }) = (weak.upgrade(), r) {
+                        *b.missing.borrow_mut() = checks.into_iter().filter(|c| !c.ok).collect();
+                        b.refresh_banners();
+                    }
+                });
                 let weak = Rc::downgrade(self);
                 p.request_then(Request::UndoLabel, move |_, r| {
                     if let (Some(b), Response::Label(l)) = (weak.upgrade(), r) {
@@ -483,7 +551,9 @@ impl Browser {
             }
             Event::PlacesChanged => self.load_places(),
             Event::DevicesChanged => self.load_devices(),
-            Event::ThumbnailReady { .. } | Event::TransferProgress(_) | Event::TransferDone { .. } => {}
+            Event::TransferProgress(status) => self.transfer_progress(status),
+            Event::TransferDone { id, error } => self.transfer_done(id, error),
+            Event::ThumbnailReady { .. } => {}
         }
     }
 
