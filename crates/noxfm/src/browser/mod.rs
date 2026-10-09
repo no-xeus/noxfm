@@ -660,6 +660,7 @@ impl App {
                         return self.load_recent(kind);
                     }
                 }
+                Event::Moved(moves) => return self.follow_moves(&moves),
                 Event::DevicesChanged => return self.load_devices(),
                 Event::PlacesChanged => return self.load_places(),
                 Event::UndoChanged(label) => self.undo_label = label,

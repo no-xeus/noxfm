@@ -1,0 +1,15 @@
+[package]
+name = "noxfm-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+noxfm-proto.workspace = true
+noxfm-core.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+async-channel = "2"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }

@@ -39,7 +39,7 @@ fn ago_from(ts: Timestamp, now: Timestamp) -> String {
 
 /// `/home/u/Projects/x` -> `~/Projects/x`
 pub fn short_path(p: &std::path::Path) -> String {
-    let home = noxfm_core::complete::home_dir();
+    let home = crate::complete::home_dir();
     match p.strip_prefix(&home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
         Ok(rest) => format!("~/{}", rest.display()),

@@ -13,7 +13,7 @@ pub use client::{Client, ClientError};
 pub use framing::{FrameError, read_frame, write_frame};
 
 /// Bumped on any incompatible change to the types below.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Hash of this crate's source, so mismatched dev builds fail the handshake
 /// even when nobody remembered to bump [`PROTOCOL_VERSION`].
@@ -309,6 +309,9 @@ pub enum Event {
     TrashChanged { items: u32 },
     UndoChanged(Option<String>),
     PlacesChanged,
+    /// Items renamed or moved (back, by an undo), `(from, to)`: windows
+    /// showing a folder inside one of them follow it.
+    Moved(Vec<(PathBuf, PathBuf)>),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

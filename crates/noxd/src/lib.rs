@@ -295,7 +295,8 @@ impl Daemon {
                 let from = path.clone();
                 let to = blocking(move || ops::rename(&path, &new_name).map_err(std::io::Error::other)).await?;
                 if to != from {
-                    self.push_undo(undo::Action::Renamed { from, to: to.clone() });
+                    self.push_undo(undo::Action::Renamed { from: from.clone(), to: to.clone() });
+                    self.hub.broadcast(Event::Moved(vec![(from, to.clone())]));
                 }
                 Ok(Response::Path(to))
             }
@@ -355,7 +356,10 @@ impl Daemon {
             }
             Request::Undo => {
                 let me = self.clone();
-                let label = blocking(move || me.undo.undo().map_err(std::io::Error::other)).await?;
+                let (label, moved) = blocking(move || me.undo.undo().map_err(std::io::Error::other)).await?;
+                if !moved.is_empty() {
+                    self.hub.broadcast(Event::Moved(moved));
+                }
                 self.hub.broadcast(Event::UndoChanged(self.undo.label()));
                 self.trash_changed();
                 Ok(Response::Label(Some(label)))

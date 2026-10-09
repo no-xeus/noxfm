@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/noxfm-proto", "crates/noxfm-core", "crates/noxd", "crates/noxfm"]
+members = ["crates/noxfm-proto", "crates/noxfm-core", "crates/noxd", "crates/noxfm", "crates/noxfm-gtk"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,3 +24,27 @@ git = "https://github.com/pop-os/libcosmic"
 rev = "60ad2cc4c33d7500aba557cd9150e6938d72d5a1"
 default-features = false
 features = ["winit", "tokio", "wayland", "wgpu", "multi-window"]
+
+# libcosmic with a fix for context-menu crashes (stale popup id after picking
+# an item). Local clone at ../libcosmic, branch `noxfm-fix-popup-id`; switch
+# these to `git = "<fork URL>", branch = "noxfm-fix-popup-id"` once it is pushed.
+# Goes away with the GTK4 UI (docs/ui-rewrite.md).
+[patch."https://github.com/pop-os/libcosmic"]
+libcosmic = { path = "../libcosmic" }
+cosmic-config = { path = "../libcosmic/cosmic-config" }
+cosmic-config-derive = { path = "../libcosmic/cosmic-config-derive" }
+cosmic-theme = { path = "../libcosmic/cosmic-theme" }
+build_helpers = { path = "../libcosmic/iced/build_helpers" }
+iced = { path = "../libcosmic/iced" }
+iced_accessibility = { path = "../libcosmic/iced/accessibility" }
+iced_core = { path = "../libcosmic/iced/core" }
+iced_debug = { path = "../libcosmic/iced/debug" }
+iced_futures = { path = "../libcosmic/iced/futures" }
+iced_graphics = { path = "../libcosmic/iced/graphics" }
+iced_program = { path = "../libcosmic/iced/program" }
+iced_renderer = { path = "../libcosmic/iced/renderer" }
+iced_runtime = { path = "../libcosmic/iced/runtime" }
+iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
+iced_wgpu = { path = "../libcosmic/iced/wgpu" }
+iced_widget = { path = "../libcosmic/iced/widget" }
+iced_winit = { path = "../libcosmic/iced/winit" }

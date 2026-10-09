@@ -119,3 +119,29 @@ async fn transfer_reports_progress_and_completion() {
         }
     }
 }
+
+#[tokio::test]
+async fn rename_and_its_undo_report_the_move() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("noxd.sock");
+    tokio::spawn(noxd::Daemon::headless(sock.clone()).serve(UnixListener::bind(&sock).unwrap()));
+    let (client, mut events) = Client::connect(&sock, Role::Browser).await.unwrap();
+    let (old, new) = (tmp.path().join("old"), tmp.path().join("new"));
+    std::fs::create_dir(&old).unwrap();
+
+    client.request(Request::Rename { path: old.clone(), new_name: "new".into() }).await.unwrap();
+    assert_eq!(moved(&mut events).await, vec![(old.clone(), new.clone())]);
+
+    // Windows inside "new" follow it back.
+    client.request(Request::Undo).await.unwrap();
+    assert_eq!(moved(&mut events).await, vec![(new, old.clone())]);
+    assert!(old.is_dir());
+}
+
+async fn moved(events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    loop {
+        if let Event::Moved(m) = next(events).await {
+            return m;
+        }
+    }
+}

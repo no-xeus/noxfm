@@ -39,7 +39,7 @@ pub fn load(path: &Path) -> Content {
 }
 
 pub fn from_bytes(head: &[u8]) -> Content {
-    if noxfm_core::filetype::looks_textual(head) {
+    if crate::filetype::looks_textual(head) {
         let text = String::from_utf8_lossy(head);
         let lines: Vec<&str> = text.lines().take(TEXT_LINES + 1).collect();
         let truncated = lines.len() > TEXT_LINES || head.len() as u64 >= TEXT_BYTES;

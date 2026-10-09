@@ -15,6 +15,7 @@ thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 png = "0.18"
 md-5 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile.workspace = true

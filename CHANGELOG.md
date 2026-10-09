@@ -12,6 +12,18 @@ All notable changes. Versions follow [semantic versioning](https://semver.org):
   at once and are refreshed in the background.
 - Measuring a folder also measures the folders up to two levels inside it,
   so opening one of them shows its sizes right away.
+- Protocol version 2: noxd reports renamed and moved-back items
+  (`Event::Moved`), so a window showing a folder inside one follows it.
+- Work started on a GTK4 window replacing the libcosmic one
+  ([docs/ui-rewrite.md](docs/ui-rewrite.md)); try it with
+  `NOXFM_WINDOW_BIN=noxfm-gtk noxd`.
+
+### Fixed
+- Crash when opening a context menu after using one, once the selection had
+  changed (for example from one file to several, or after clicking a folder
+  in the sidebar). Fixed in libcosmic, built from a patched clone.
+- Undoing the rename of the folder you're in left the window on a path that
+  no longer existed.
 
 ## [0.1.0] - 2026-10-09
 

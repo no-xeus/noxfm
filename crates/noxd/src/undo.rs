@@ -46,22 +46,28 @@ impl Action {
         }
     }
 
-    /// Blocking.
-    fn revert(&self) -> anyhow::Result<()> {
+    /// Blocking. Returns what was put back where, `(from, to)`, so windows
+    /// showing a folder that moved can follow it.
+    fn revert(&self) -> anyhow::Result<Vec<(PathBuf, PathBuf)>> {
+        let mut moved = Vec::new();
         match self {
             Action::Renamed { from, to } => {
                 anyhow::ensure!(!from.exists(), "“{}” exists again", name(from));
                 std::fs::rename(to, from)?;
+                moved.push((to.clone(), from.clone()));
             }
             Action::Moved(pairs) => {
                 for (orig, now) in pairs {
                     let parent = orig.parent().ok_or_else(|| anyhow::anyhow!("no parent"))?;
                     std::fs::create_dir_all(parent)?;
                     let back = if orig.exists() { unique_target(parent, Path::new(&name(orig))) } else { orig.clone() };
-                    if std::fs::rename(now, &back).is_err() {
+                    if std::fs::rename(now, &back).is_ok() {
+                        moved.push((now.clone(), back));
+                    } else {
                         // Different filesystems: copy back, then remove.
                         let cancel = std::sync::atomic::AtomicBool::new(false);
                         noxfm_core::transfer::run(noxfm_proto::TransferOp::Move, std::slice::from_ref(now), parent, &cancel, &mut |_, _| {})?;
+                        moved.push((now.clone(), parent.join(name(now))));
                     }
                 }
             }
@@ -76,7 +82,7 @@ impl Action {
                 trash::restore(ids)?;
             }
         }
-        Ok(())
+        Ok(moved)
     }
 }
 
@@ -98,11 +104,12 @@ impl Undo {
         self.stack.lock().unwrap().last().map(Action::label)
     }
 
-    /// Reverts the latest action. Blocking. Returns its label.
-    pub fn undo(&self) -> anyhow::Result<String> {
+    /// Reverts the latest action. Blocking. Returns its label and what it
+    /// moved back, `(from, to)`.
+    pub fn undo(&self) -> anyhow::Result<(String, Vec<(PathBuf, PathBuf)>)> {
         let action = self.stack.lock().unwrap().pop().ok_or_else(|| anyhow::anyhow!("nothing to undo"))?;
-        action.revert().map_err(|e| anyhow::anyhow!("couldn't undo the {}: {e}", action.label()))?;
-        Ok(action.label())
+        let moved = action.revert().map_err(|e| anyhow::anyhow!("couldn't undo the {}: {e}", action.label()))?;
+        Ok((action.label(), moved))
     }
 }
 
@@ -126,16 +133,18 @@ mod tests {
         let undo = Undo::default();
         undo.push(Action::Renamed { from: a.clone(), to: b.clone() });
         assert_eq!(undo.label().as_deref(), Some("rename of “a”"));
-        undo.undo().unwrap();
+        let (_, moved) = undo.undo().unwrap();
         assert!(a.exists() && !b.exists());
+        assert_eq!(moved, vec![(b.clone(), a.clone())]);
 
         let sub = t.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::rename(&a, sub.join("a")).unwrap();
         undo.push(Action::Moved(vec![(a.clone(), sub.join("a"))]));
         std::fs::write(&a, "someone made a new one").unwrap();
-        undo.undo().unwrap();
+        let (_, moved) = undo.undo().unwrap();
         assert!(t.path().join("a (1)").exists(), "moved back beside the newcomer");
+        assert_eq!(moved, vec![(sub.join("a"), t.path().join("a (1)"))]);
         assert!(undo.undo().is_err(), "stack empty");
 
         for i in 0..25 {

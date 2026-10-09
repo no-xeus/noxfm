@@ -441,6 +441,41 @@ impl App {
         self.go(loc)
     }
 
+    /// Folders were renamed or moved (`(from, to)`): every tab and history
+    /// entry inside one of them follows it, and the active tab relists.
+    pub(super) fn follow_moves(&mut self, moves: &[(PathBuf, PathBuf)]) -> cosmic::app::Task<Message> {
+        let relocate = |p: &Path| noxfm_core::moves::relocated(p, moves);
+        let fix_history = |locs: &mut Vec<Loc>| {
+            for loc in locs {
+                if let Loc::Dir(p) = loc
+                    && let Some(new) = relocate(p)
+                {
+                    *p = new;
+                }
+            }
+        };
+        fix_history(&mut self.back);
+        fix_history(&mut self.forward);
+        for t in self.tabs.iter_mut().filter_map(|t| t.state.as_mut()) {
+            fix_history(&mut t.back);
+            fix_history(&mut t.forward);
+            if let Some(new) = relocate(&t.path) {
+                if t.recent.is_none() && !t.trash_view {
+                    t.path_input = super::display(&new);
+                }
+                t.path = new;
+            }
+        }
+        let Some(new) = relocate(&self.path) else { return Task::none() };
+        self.path = new.clone();
+        if self.recent.is_some() || self.trash_view {
+            return Task::none();
+        }
+        // Already the current path, so the listing isn't recorded as a move.
+        self.path_input = super::display(&new);
+        self.load(new)
+    }
+
     /// The tab being dragged, drawn small under the pointer.
     pub(super) fn tab_drag_preview(&self) -> Option<Element<'_, Message>> {
         let drag = self.tab_drag.as_ref().filter(|d| d.moved)?;

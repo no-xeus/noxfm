@@ -69,6 +69,11 @@ pub enum SortKey {
 /// Directories always come first; ties fall back to case-insensitive name.
 /// Unknown values (no size yet, no btime) sort last in both directions.
 pub fn sort_by(entries: &mut [Entry], key: SortKey, ascending: bool) {
+    entries.sort_by(|a, b| compare(a, b, key, ascending));
+}
+
+/// The order of [`sort_by`], for one pair.
+pub fn compare(a: &Entry, b: &Entry, key: SortKey, ascending: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
     fn opt<T: Ord>(a: Option<T>, b: Option<T>, asc: bool) -> Ordering {
@@ -82,20 +87,18 @@ pub fn sort_by(entries: &mut [Entry], key: SortKey, ascending: bool) {
     }
     let dir = |o: Ordering| if ascending { o } else { o.reverse() };
 
-    entries.sort_by(|a, b| {
-        let dirs_first = (a.kind != EntryKind::Dir).cmp(&(b.kind != EntryKind::Dir));
-        let name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
-        let by_key = match key {
-            SortKey::Name => dir(name()),
-            SortKey::Extension => dir(a.extension().map(str::to_lowercase).cmp(&b.extension().map(str::to_lowercase))),
-            SortKey::Size => opt(a.size, b.size, ascending),
-            SortKey::Modified => opt(a.modified, b.modified, ascending),
-            SortKey::Created => opt(a.created, b.created, ascending),
-            SortKey::Owner => dir(a.owner.cmp(&b.owner)),
-            SortKey::Permissions => dir((a.mode & 0o7777).cmp(&(b.mode & 0o7777))),
-        };
-        dirs_first.then(by_key).then_with(name)
-    });
+    let dirs_first = (a.kind != EntryKind::Dir).cmp(&(b.kind != EntryKind::Dir));
+    let name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+    let by_key = match key {
+        SortKey::Name => dir(name()),
+        SortKey::Extension => dir(a.extension().map(str::to_lowercase).cmp(&b.extension().map(str::to_lowercase))),
+        SortKey::Size => opt(a.size, b.size, ascending),
+        SortKey::Modified => opt(a.modified, b.modified, ascending),
+        SortKey::Created => opt(a.created, b.created, ascending),
+        SortKey::Owner => dir(a.owner.cmp(&b.owner)),
+        SortKey::Permissions => dir((a.mode & 0o7777).cmp(&(b.mode & 0o7777))),
+    };
+    dirs_first.then(by_key).then_with(name)
 }
 
 fn build(path: &Path, names: &mut Names) -> io::Result<Entry> {
