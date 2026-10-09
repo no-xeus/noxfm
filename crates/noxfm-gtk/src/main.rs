@@ -5,6 +5,7 @@
 //! `~/.local/state/noxfm/windows.log`.
 
 mod cells;
+mod clipboard;
 mod complete;
 mod daemon;
 mod grid;
@@ -38,7 +39,9 @@ fn main() -> anyhow::Result<glib::ExitCode> {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     window::set_accels(&app);
-    app.connect_activate(move |app| window::Browser::open(app, daemon.clone(), conn.clone(), start.clone()));
+    app.connect_activate(move |app| {
+        window::Browser::open(app, daemon.clone(), conn.clone(), start.clone());
+    });
     // Arguments were handled above; GApplication would reject ours.
     Ok(app.run_with_args::<&str>(&[]))
 }

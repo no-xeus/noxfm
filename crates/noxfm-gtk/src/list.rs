@@ -17,6 +17,8 @@ pub struct ListView {
     pub owner: gtk::ColumnViewColumn,
     pub permissions: gtk::ColumnViewColumn,
     name: gtk::ColumnViewColumn,
+    /// Every column and the key it sorts by.
+    keyed: Vec<(SortKey, gtk::ColumnViewColumn)>,
     cells: Rc<Cells>,
 }
 
@@ -30,20 +32,20 @@ impl ListView {
 
         let name = col("Name", SortKey::Name, name_factory(cells));
         name.set_expand(true);
-        let ext = col("Type", SortKey::Extension, label_factory(|e| e.extension().map(str::to_lowercase).unwrap_or_default()));
+        let ext = col("Type", SortKey::Extension, label_factory(cells, |e| e.extension().map(str::to_lowercase).unwrap_or_default()));
         ext.set_fixed_width(80);
         let size = col("Size", SortKey::Size, size_factory(cells));
         size.set_fixed_width(100);
-        let modified = col("Modified", SortKey::Modified, label_factory(|e| fmt::time(e.modified)));
+        let modified = col("Modified", SortKey::Modified, label_factory(cells, |e| fmt::time(e.modified)));
         modified.set_fixed_width(150);
-        let created = col("Created", SortKey::Created, label_factory(|e| fmt::time(e.created)));
+        let created = col("Created", SortKey::Created, label_factory(cells, |e| fmt::time(e.created)));
         created.set_fixed_width(150);
-        let owner = col("Owner", SortKey::Owner, label_factory(owner_text));
+        let owner = col("Owner", SortKey::Owner, label_factory(cells, owner_text));
         owner.set_fixed_width(110);
         let permissions = col(
             "Permissions",
             SortKey::Permissions,
-            label_factory(|e| format!("{} {}", noxfm_core::perms::symbolic(e.mode), noxfm_core::perms::octal(e.mode))),
+            label_factory(cells, |e| format!("{} {}", noxfm_core::perms::symbolic(e.mode), noxfm_core::perms::octal(e.mode))),
         );
         permissions.set_fixed_width(140);
         for c in [&name, &ext, &size, &modified, &created, &owner, &permissions] {
@@ -57,12 +59,34 @@ impl ListView {
         // Connected before any sort model, so the direction is current when it re-sorts.
         sorter.connect_changed(move |s, _| ascending.set(s.primary_sort_order() == gtk::SortType::Ascending));
         view.sort_by_column(Some(&name), gtk::SortType::Ascending);
-        ListView { view, sorter, size, created, owner, permissions, name, cells: cells.clone() }
+        let keyed = vec![
+            (SortKey::Name, name.clone()),
+            (SortKey::Extension, ext),
+            (SortKey::Size, size.clone()),
+            (SortKey::Modified, modified),
+            (SortKey::Created, created.clone()),
+            (SortKey::Owner, owner.clone()),
+            (SortKey::Permissions, permissions.clone()),
+        ];
+        ListView { view, sorter, size, created, owner, permissions, name, keyed, cells: cells.clone() }
     }
 
     /// Icons take the current zoom (rows are rebuilt).
     pub fn zoomed(&self) {
         self.name.set_factory(Some(&name_factory(&self.cells)));
+    }
+
+    pub fn sort(&self, key: SortKey, ascending: bool) {
+        let col = self.keyed.iter().find(|(k, _)| *k == key).map(|(_, c)| c);
+        let order = if ascending { gtk::SortType::Ascending } else { gtk::SortType::Descending };
+        self.view.sort_by_column(col, order);
+    }
+
+    /// The sort key and direction in effect.
+    pub fn sorting(&self) -> (SortKey, bool) {
+        let col = self.sorter.primary_sort_column();
+        let key = self.keyed.iter().find(|(_, c)| Some(c) == col.as_ref()).map_or(SortKey::Name, |(k, _)| *k);
+        (key, self.sorter.primary_sort_order() == gtk::SortType::Ascending)
     }
 
     pub fn sorted_by_size(&self) -> bool {
@@ -99,13 +123,23 @@ fn label() -> gtk::Label {
     gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build()
 }
 
-fn label_factory(text: impl Fn(&Entry) -> String + 'static) -> gtk::SignalListItemFactory {
+fn label_factory(cells: &Rc<Cells>, text: impl Fn(&Entry) -> String + 'static) -> gtk::SignalListItemFactory {
     let f = gtk::SignalListItemFactory::new();
     f.connect_setup(|_, item| item.downcast_ref::<gtk::ListItem>().unwrap().set_child(Some(&label())));
+    let c = cells.clone();
     f.connect_bind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         let label = item.child().and_downcast::<gtk::Label>().unwrap();
-        label.set_text(&text(&entry_of(&item.item().unwrap())));
+        let obj = item.item().unwrap();
+        let e = entry_of(&obj);
+        label.set_text(&text(&e));
+        c.own(&label, &e.path);
+    });
+    let c = cells.clone();
+    f.connect_unbind(move |_, item| {
+        if let Some(child) = item.downcast_ref::<gtk::ListItem>().unwrap().child() {
+            c.disown(&child);
+        }
     });
     f
 }
@@ -127,12 +161,16 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
         image.set_pixel_size(c.list_px());
         c.bind_icon(&image, &e);
         label.set_text(&e.name);
+        c.own(&item.child().unwrap(), &e.path);
     });
     let c = cells.clone();
     f.connect_unbind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         if let Some(obj) = item.item() {
             c.unbind_icon(&parts(item).0, &entry_of(&obj).path);
+        }
+        if let Some(child) = item.child() {
+            c.disown(&child);
         }
     });
     f
@@ -152,7 +190,10 @@ fn size_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
     f.connect_bind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         let label = item.child().and_downcast::<gtk::Label>().unwrap();
-        c.bind_size(&label, &entry_of(&item.item().unwrap()));
+        let obj = item.item().unwrap();
+        let e = entry_of(&obj);
+        c.bind_size(&label, &e);
+        c.own(&label, &e.path);
     });
     let c = cells.clone();
     f.connect_unbind(move |_, item| {
@@ -161,6 +202,7 @@ fn size_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
         if let Some(obj) = item.item() {
             c.unbind_size(&label, &entry_of(&obj).path);
         }
+        c.disown(&label);
     });
     f
 }

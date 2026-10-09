@@ -34,6 +34,13 @@ carries file lists, and list/grid views that only build visible rows.
 - **Removed at the end:** `crates/noxfm` and every libcosmic dependency.
   Packaging then depends on `gtk4` and no longer builds wgpu.
 
+## Tests
+
+`cargo test -p noxfm-gtk` drives a real window against a headless noxd on
+an offscreen display (`gtk4-broadwayd`, from the gtk4 package; skipped when
+missing). Input can't be injected there, so it calls what keys and menus
+call. Drag and drop, and how things look, still need a manual check.
+
 ## Running it during the rewrite
 
 ```sh
@@ -56,10 +63,12 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
    owner/permissions columns, thumbnails, path completion in a popover above
    the content. Not carried over yet: the default app's icon on file icons
    (FastOpen badge), git badge, mime-mismatch warning — with phase 5 panels.
-3. **Actions.** Context menus (items, background, Recent, Trash), clipboard
-   with cut hint (cut items dimmed until pasted or replaced), paste and paste
-   as link, drag and drop (in, out, onto folders), rename inline, new
+3. ✅ **Actions.** Context menus (items, background), clipboard with cut
+   hint (cut items dimmed until pasted or replaced), paste and paste as link,
+   drag and drop (in, out, onto folders), rename in place, new
    folder/file/template, trash, delete, undo, compress/extract, send to.
+   Recent and Trash menus come with those views (phase 4); "Open with ▸
+   Other application…" and Properties with phase 5.
 4. **Navigation.** Tabs (with detach to a new window), history per tab,
    sidebar (Recent, Places, Pinned, Devices; folding, resizing), Recent and
    Trash views, mounting and mount policies.
@@ -70,7 +79,7 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
 
 ## Feedback to address in the new window
 
-- Cut items keep a visual hint (dimmed) — phase 3.
+- Cut items keep a visual hint (dimmed) — done.
 - Undoing a rename of the folder you're in follows it — done in the daemon
   (`Event::Moved`); the GTK window handles it from phase 1.
 - Path completion shows above other elements, not pushing them down — done

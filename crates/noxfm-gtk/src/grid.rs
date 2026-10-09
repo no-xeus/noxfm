@@ -51,12 +51,16 @@ fn factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
         let e = entry_of(&obj);
         c.bind_icon(&image, &e);
         label.set_text(&e.name);
+        c.own(&item.child().unwrap(), &e.path);
     });
     let c = cells.clone();
     f.connect_unbind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         if let Some(obj) = item.item() {
             c.unbind_icon(&parts(item).0, &entry_of(&obj).path);
+        }
+        if let Some(child) = item.child() {
+            c.disown(&child);
         }
     });
     f

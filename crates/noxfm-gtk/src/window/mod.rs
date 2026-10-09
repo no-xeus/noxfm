@@ -1,5 +1,10 @@
 //! The browser window: one folder, as a list or a grid of icons.
 
+mod dnd;
+mod menu;
+mod ops;
+mod rename;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -7,7 +12,7 @@ use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use noxfm_proto::{Entry, EntryKind, Event, Request, Response};
+use noxfm_proto::{AppRef, Device, Entry, EntryKind, Event, Place, Request, Response};
 
 use crate::cells::{Cells, GRID_ICONS, GRID_ZOOM, LIST_ICONS, LIST_ZOOM, entry_of};
 use crate::complete::Completion;
@@ -64,6 +69,8 @@ struct State {
     subscribed: Option<PathBuf>,
     fs: Option<String>,
     error: Option<String>,
+    /// What just happened ("Copied 3 items"), until another folder is shown.
+    notice: Option<String>,
 }
 
 pub struct Browser {
@@ -84,6 +91,30 @@ pub struct Browser {
     cells: Rc<Cells>,
     status: gtk::Label,
     state: RefCell<State>,
+    /// Context menus, one per view (popovers are parented to it).
+    list_menu: gtk::PopoverMenu,
+    grid_menu: gtk::PopoverMenu,
+    places: RefCell<Vec<Place>>,
+    devices: RefCell<Vec<Device>>,
+    /// Apps for "Open with ▸", for one MIME type (the selected file's).
+    open_with: RefCell<(String, Vec<AppRef>)>,
+    templates: Vec<PathBuf>,
+    undo_label: RefCell<Option<String>>,
+    /// Rename / select this as soon as the listing shows it.
+    pending_rename: RefCell<Option<PathBuf>>,
+    pending_select: RefCell<Option<PathBuf>>,
+}
+
+const CSS: &str = "
+.drop-target { background-color: alpha(@accent_bg_color, 0.25); border-radius: 6px; }
+";
+
+fn context_popover(parent: &impl IsA<gtk::Widget>) -> gtk::PopoverMenu {
+    let p = gtk::PopoverMenu::from_model(None::<&gio::MenuModel>);
+    p.set_has_arrow(false);
+    p.set_halign(gtk::Align::Start);
+    p.set_parent(parent);
+    p
 }
 
 /// `/a/b/`, as typed in the path bar.
@@ -116,7 +147,11 @@ fn view_menu() -> gio::Menu {
 }
 
 impl Browser {
-    pub fn open(app: &gtk::Application, daemon: Daemon, conn: async_channel::Receiver<Conn>, start: PathBuf) {
+    pub fn open(app: &gtk::Application, daemon: Daemon, conn: async_channel::Receiver<Conn>, start: PathBuf) -> Rc<Browser> {
+        let css = gtk::CssProvider::new();
+        css.load_from_string(CSS);
+        gtk::style_context_add_provider_for_display(&gdk::Display::default().expect("a display"), &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
         let cells = Cells::new(daemon.clone());
         let list = ListView::new(&cells);
         let grid = grid::new(&cells);
@@ -175,7 +210,17 @@ impl Browser {
             .child(&content)
             .build();
 
+        let (list_menu, grid_menu) = (context_popover(&list.view), context_popover(&grid));
         let this = Rc::new(Browser {
+            list_menu,
+            grid_menu,
+            places: RefCell::default(),
+            devices: RefCell::default(),
+            open_with: RefCell::default(),
+            templates: ops::load_templates(),
+            undo_label: RefCell::default(),
+            pending_rename: RefCell::default(),
+            pending_select: RefCell::default(),
             daemon,
             window,
             path_bar,
@@ -195,17 +240,26 @@ impl Browser {
         this.completion.set_text_quietly(&display(&start));
         this.status.set_text("Connecting to noxd…");
         this.install_actions(&toggle);
+        this.install_file_actions();
         this.connect_signals();
+        let views: [(gtk::Widget, &gtk::PopoverMenu); 2] =
+            [(this.list.view.clone().upcast(), &this.list_menu), (this.grid.clone().upcast(), &this.grid_menu)];
+        for (view, menu) in views {
+            this.connect_context_menu(&view, menu);
+            this.connect_dnd(&view);
+        }
 
         this.window.present();
         this.list.view.grab_focus();
         // This loop owns the browser: it runs as long as the process (one
         // window per process; closing it quits the application).
+        let owner = this.clone();
         glib::spawn_future_local(async move {
             while let Ok(c) = conn.recv().await {
-                this.on_conn(c);
+                owner.on_conn(c);
             }
         });
+        this
     }
 
     fn add_action(self: &Rc<Self>, a: &gio::SimpleAction, run: impl Fn(&Rc<Self>, &gio::SimpleAction, Option<&glib::Variant>) + 'static) {
@@ -389,6 +443,14 @@ impl Browser {
                     st.path.clone()
                 };
                 self.load(path, Nav::Reload);
+                self.load_places();
+                self.load_devices();
+                self.request_then(Request::UndoLabel, |this, r| {
+                    if let Response::Label(l) = r {
+                        *this.undo_label.borrow_mut() = l;
+                        this.update_undo();
+                    }
+                });
             }
             Conn::Lost(why) => {
                 log::debug!("noxd lost: {why}");
@@ -403,6 +465,12 @@ impl Browser {
         match ev {
             Event::DirChanged { path } if path == self.state.borrow().path => self.load(path, Nav::Reload),
             Event::SizeUpdated { path, bytes } => self.size_updated(&path, bytes),
+            Event::UndoChanged(label) => {
+                *self.undo_label.borrow_mut() = label;
+                self.update_undo();
+            }
+            Event::PlacesChanged => self.load_places(),
+            Event::DevicesChanged => self.load_devices(),
             Event::Moved(moves) => {
                 let relocate = |p: &Path| noxfm_core::moves::relocated(p, &moves);
                 let new = {
@@ -420,6 +488,30 @@ impl Browser {
                 self.load(new, Nav::Reload);
             }
             _ => {}
+        }
+    }
+
+    fn load_places(self: &Rc<Self>) {
+        self.request_then(Request::Places, |this, r| {
+            if let Response::Places(p) = r {
+                *this.places.borrow_mut() = p;
+            }
+        });
+    }
+
+    fn load_devices(self: &Rc<Self>) {
+        self.request_then(Request::ListDevices, |this, r| {
+            if let Response::Devices(d) = r {
+                *this.devices.borrow_mut() = d;
+            }
+        });
+    }
+
+    /// The shown view and its context menu.
+    fn current_view_and_menu(&self) -> (gtk::Widget, gtk::PopoverMenu) {
+        match self.mode.get() {
+            ViewMode::List => (self.list.view.clone().upcast(), self.list_menu.clone()),
+            ViewMode::Grid => (self.grid.clone().upcast(), self.grid_menu.clone()),
         }
     }
 
@@ -479,6 +571,9 @@ impl Browser {
             }
             st.fs = fs;
             st.error = None;
+            if !same {
+                st.notice = None;
+            }
             // The listing subscribed us to `path`; drop the previous watch.
             let old_watch = st.subscribed.replace(path.clone()).filter(|o| *o != path);
             (same, old_watch)
@@ -502,6 +597,8 @@ impl Browser {
                 }
             }
         }
+        self.apply_pending();
+        self.apply_pending_select();
 
         // Don't overwrite what the user is typing over a mere refresh.
         if !same || !self.path_bar.has_focus() {
@@ -583,6 +680,7 @@ impl Browser {
         if selected > 0 {
             parts.push(format!("{selected} selected"));
         }
+        parts.extend(st.notice.clone());
         parts.extend(st.error.clone());
         parts.extend(st.fs.clone());
         self.status.set_text(&parts.join("  ·  "));
@@ -601,3 +699,6 @@ impl Browser {
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

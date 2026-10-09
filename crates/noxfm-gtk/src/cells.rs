@@ -50,7 +50,17 @@ pub struct Cells {
     requested: RefCell<HashSet<PathBuf>>,
     icons: Live<gtk::Image>,
     sizes: Live<gtk::Label>,
+    /// Every cell widget on screen and the item it shows, to find the item
+    /// under the pointer (right-click, drag, drop).
+    owners: RefCell<HashMap<gtk::Widget, PathBuf>>,
+    /// Items cut to the clipboard: drawn dimmed until pasted or replaced.
+    cut: RefCell<HashSet<PathBuf>>,
+    /// Folder a drag hovers, highlighted as the drop target.
+    drop_hover: RefCell<Option<PathBuf>>,
 }
+
+/// Icon opacity of cut items.
+const CUT_OPACITY: f64 = 0.45;
 
 impl Cells {
     pub fn new(daemon: Daemon) -> Rc<Self> {
@@ -62,6 +72,9 @@ impl Cells {
             requested: RefCell::default(),
             icons: RefCell::default(),
             sizes: RefCell::default(),
+            owners: RefCell::default(),
+            cut: RefCell::default(),
+            drop_hover: RefCell::default(),
         })
     }
 
@@ -77,6 +90,7 @@ impl Cells {
     /// thumbnail is asked for, once, if the type has them).
     pub fn bind_icon(self: &Rc<Self>, image: &gtk::Image, e: &Entry) {
         register(&self.icons, &e.path, image);
+        image.set_opacity(if self.cut.borrow().contains(&e.path) { CUT_OPACITY } else { 1.0 });
         if let Some(t) = self.thumbs.borrow().get(&e.path).filter(|t| t.modified == e.modified) {
             image.set_paintable(Some(&t.texture));
             return;
@@ -105,6 +119,72 @@ impl Cells {
     pub fn size_updated(&self, path: &Path, bytes: u64) {
         for label in live(&self.sizes, path) {
             label.set_text(&fmt::size(bytes));
+        }
+    }
+
+    /// `w` shows `path` (until [`Cells::disown`]).
+    pub fn own(&self, w: &impl IsA<gtk::Widget>, path: &Path) {
+        let w = w.upcast_ref::<gtk::Widget>();
+        if self.drop_hover.borrow().as_deref() == Some(path) {
+            w.add_css_class("drop-target");
+        } else {
+            w.remove_css_class("drop-target");
+        }
+        self.owners.borrow_mut().insert(w.clone(), path.to_path_buf());
+    }
+
+    pub fn disown(&self, w: &impl IsA<gtk::Widget>) {
+        self.owners.borrow_mut().remove(w.upcast_ref::<gtk::Widget>());
+    }
+
+    /// The item shown at `(x, y)` of `view`, if any.
+    pub fn path_at(&self, view: &impl IsA<gtk::Widget>, x: f64, y: f64) -> Option<PathBuf> {
+        let view = view.upcast_ref::<gtk::Widget>();
+        let owners = self.owners.borrow();
+        let mut w = view.pick(x, y, gtk::PickFlags::DEFAULT);
+        while let Some(cur) = w {
+            if let Some(p) = owners.get(&cur) {
+                return Some(p.clone());
+            }
+            if cur == *view {
+                break;
+            }
+            w = cur.parent();
+        }
+        None
+    }
+
+    /// A widget showing `path`, preferably the one registered first (the
+    /// name cell or the tile), to anchor a popover to.
+    pub fn anchor(&self, path: &Path) -> Option<gtk::Widget> {
+        live(&self.icons, path).into_iter().next().and_then(|i| i.parent())
+    }
+
+    #[cfg(test)]
+    pub fn is_cut(&self, path: &Path) -> bool {
+        self.cut.borrow().contains(path)
+    }
+
+    pub fn set_cut(&self, paths: HashSet<PathBuf>) {
+        *self.cut.borrow_mut() = paths;
+        let cut = self.cut.borrow();
+        for (path, images) in self.icons.borrow().iter() {
+            let opacity = if cut.contains(path) { CUT_OPACITY } else { 1.0 };
+            images.iter().filter_map(|w| w.upgrade()).for_each(|i| i.set_opacity(opacity));
+        }
+    }
+
+    pub fn set_drop_hover(&self, path: Option<PathBuf>) {
+        if *self.drop_hover.borrow() == path {
+            return;
+        }
+        *self.drop_hover.borrow_mut() = path.clone();
+        for (w, p) in self.owners.borrow().iter() {
+            if Some(p) == path.as_ref() {
+                w.add_css_class("drop-target");
+            } else {
+                w.remove_css_class("drop-target");
+            }
         }
     }
 
