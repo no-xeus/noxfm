@@ -83,7 +83,7 @@ impl Daemon {
                 while !me.transfers.list().is_empty() {
                     tokio::time::sleep(DRAIN_EVERY).await;
                 }
-                me.save_recent();
+                me.save_state();
                 let err = me.reexec();
                 tracing::error!(%err, "could not restart into the new noxd; keeping the old one");
                 return;

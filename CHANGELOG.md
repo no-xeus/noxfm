@@ -7,6 +7,12 @@ All notable changes. Versions follow [semantic versioning](https://semver.org):
 
 ## [Unreleased]
 
+### Changed
+- Folder sizes are kept across restarts (`~/.cache/noxfm/sizes`): they show
+  at once and are refreshed in the background.
+- Measuring a folder also measures the folders up to two levels inside it,
+  so opening one of them shows its sizes right away.
+
 ## [0.1.0] - 2026-10-09
 
 First proof of concept.

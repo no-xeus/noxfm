@@ -66,6 +66,7 @@ impl Daemon {
         let conf = std::fs::read_to_string(config.join("noxfm/noxfm.conf")).ok();
         Self::build(
             Supervisor::new(socket),
+            Sizes::for_user(),
             recent::Recent::for_user(),
             mounts::Mounts::for_user(),
             ops::Pins::for_user(),
@@ -78,6 +79,7 @@ impl Daemon {
     pub fn headless(socket: PathBuf) -> Arc<Self> {
         Self::build(
             Supervisor::headless(socket),
+            Sizes::default(),
             recent::Recent::new(Vec::new(), "/dev/null".into()),
             mounts::Mounts::disabled(),
             ops::Pins::at(std::env::temp_dir().join(format!("noxd-test-pins-{}", std::process::id()))),
@@ -88,6 +90,7 @@ impl Daemon {
 
     fn build(
         supervisor: Supervisor,
+        sizes: Sizes,
         recent: recent::Recent,
         mounts: mounts::Mounts,
         pins: ops::Pins,
@@ -98,7 +101,7 @@ impl Daemon {
         Arc::new(Daemon {
             hub: Hub::default(),
             supervisor,
-            sizes: Sizes::default(),
+            sizes,
             transfers: Default::default(),
             apps: Default::default(),
             recent,
@@ -120,6 +123,7 @@ impl Daemon {
             let me = self.clone();
             tokio::spawn(watcher::debounce(rx, move |paths| me.on_changes(paths)));
             self.start_recent();
+            self.start_sizes();
             self.start_mounts();
             self.start_trash();
             // Once mounts had a moment to connect, say what's missing.
@@ -557,6 +561,24 @@ impl Daemon {
         }
     }
 
+    /// Saves what must survive a restart (blocking).
+    pub fn save_state(&self) {
+        self.save_recent();
+        self.sizes.save();
+    }
+
+    fn start_sizes(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut save = tokio::time::interval(sizes::SAVE_EVERY);
+            loop {
+                save.tick().await;
+                let me = me.clone();
+                let _ = tokio::task::spawn_blocking(move || me.sizes.save()).await;
+            }
+        });
+    }
+
     /// Fills in cached directory sizes and starts walks for the rest.
     /// Results reach whoever watches `parent` as `SizeUpdated`.
     fn fill_sizes(self: &Arc<Self>, parent: &Path, entries: &mut [Entry]) {
@@ -582,7 +604,15 @@ impl Daemon {
         .await;
         drop(permit);
         self.sizes.end(&dir);
-        if let Ok(Some(bytes)) = result {
+        let Ok(walk) = result else { return };
+        // Windows already showing a subfolder's parent get its size too.
+        for (sub, bytes) in walk.subdirs {
+            if let Some(p) = sub.parent() {
+                self.hub.publish(p, Event::SizeUpdated { path: sub.clone(), bytes });
+            }
+            self.sizes.store(sub, bytes);
+        }
+        if let Some(bytes) = walk.total {
             self.sizes.store(dir.clone(), bytes);
             self.hub.publish(&parent, Event::SizeUpdated { path: dir, bytes });
         }

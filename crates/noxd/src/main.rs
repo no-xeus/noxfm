@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
     }
-    daemon.save_recent();
+    daemon.save_state();
     let _ = std::fs::remove_file(&path);
     Ok(())
 }
