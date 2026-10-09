@@ -3,13 +3,15 @@
 //! actions and methods that keys, menus and clicks call.
 
 use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use noxfm_proto::{NewKind, Request, TransferOp};
 
-use super::{Browser, Nav, ViewMode};
+use super::pane::{Loc, Nav, Pane};
+use super::{Browser, ViewMode};
 use crate::cells::{GRID_ZOOM, entry_of};
 use crate::daemon::Daemon;
 
@@ -24,8 +26,8 @@ fn wait_for(what: &str, cond: impl Fn() -> bool) {
     }
 }
 
-fn names(b: &Browser) -> Vec<String> {
-    (0..b.selection.n_items()).filter_map(|i| b.selection.item(i)).map(|o| entry_of(&o).name.clone()).collect()
+fn names(p: &Pane) -> Vec<String> {
+    (0..p.selection.n_items()).filter_map(|i| p.selection.item(i)).map(|o| entry_of(&o).name.clone()).collect()
 }
 
 fn action(b: &Browser, name: &str, param: Option<&glib::Variant>) {
@@ -105,68 +107,105 @@ fn file_actions_end_to_end() {
     let app = gtk::Application::builder().application_id("dev.noxfm.Test").flags(gio::ApplicationFlags::NON_UNIQUE).build();
     app.register(None::<&gio::Cancellable>).unwrap();
     let (daemon, conn) = Daemon::start(sock);
-    let b = Browser::open(&app, daemon, conn, dir.clone());
+    let b = Browser::open(&app, daemon, conn, Loc::Dir(dir.clone()), None);
+    let p = b.pane();
 
-    wait_for("first listing", || names(&b) == ["a", "sub", "b.txt"]);
+    wait_for("first listing", || names(&p) == ["a", "sub", "b.txt"]);
+    assert_eq!(b.path_bar.text(), format!("{}/", dir.display()));
 
     // Copy, then paste in another folder.
-    b.select_only(&dir.join("b.txt"));
-    b.to_clipboard(TransferOp::Copy);
-    assert_eq!(b.state.borrow().notice.as_deref(), Some("Copied 1 item"));
-    b.load(dir.join("sub"), Nav::New);
-    wait_for("sub listed", || b.here() == dir.join("sub"));
-    b.paste(false);
-    wait_for("copy pasted", || names(&b) == ["b.txt"]);
+    p.select_only(&dir.join("b.txt"));
+    p.to_clipboard(TransferOp::Copy);
+    assert_eq!(p.state.borrow().notice.as_deref(), Some("Copied 1 item"));
+    p.load(Loc::Dir(dir.join("sub")), Nav::New);
+    wait_for("sub listed", || p.here() == dir.join("sub"));
+    p.paste(false);
+    wait_for("copy pasted", || names(&p) == ["b.txt"]);
     assert!(dir.join("b.txt").exists());
 
     // Cut: dimmed until pasted, then moved.
-    b.go_back();
-    wait_for("back", || b.here() == dir && names(&b).len() == 3);
-    b.select_only(&dir.join("b.txt"));
-    b.to_clipboard(TransferOp::Move);
-    assert!(b.cells.is_cut(&dir.join("b.txt")));
-    b.load(dir.join("a"), Nav::New);
-    wait_for("a listed", || b.here() == dir.join("a"));
-    b.paste(false);
-    wait_for("cut pasted", || names(&b) == ["b.txt"]);
+    p.go_back();
+    wait_for("back", || p.here() == dir && names(&p).len() == 3);
+    p.select_only(&dir.join("b.txt"));
+    p.to_clipboard(TransferOp::Move);
+    assert!(p.cells.is_cut(&dir.join("b.txt")));
+    p.load(Loc::Dir(dir.join("a")), Nav::New);
+    wait_for("a listed", || p.here() == dir.join("a"));
+    p.paste(false);
+    wait_for("cut pasted", || names(&p) == ["b.txt"]);
     assert!(!dir.join("b.txt").exists(), "moved, not copied");
-    assert!(!b.cells.is_cut(&dir.join("b.txt")), "a cut is pasted once");
+    assert!(!p.cells.is_cut(&dir.join("b.txt")), "a cut is pasted once");
 
     // New folder: selected and waiting to be renamed; undo trashes it.
-    b.create(NewKind::Folder);
-    wait_for("new folder", || names(&b).len() == 2);
-    wait_for("pending rename used", || b.pending_rename.borrow().is_none());
-    assert_eq!(b.selected_entries().len(), 1);
-    b.undo();
-    wait_for("undone", || names(&b) == ["b.txt"]);
+    p.create(NewKind::Folder);
+    wait_for("new folder", || names(&p).len() == 2);
+    wait_for("pending rename used", || p.pending_rename.borrow().is_none());
+    assert_eq!(p.selected_entries().len(), 1);
+    p.undo();
+    wait_for("undone", || names(&p) == ["b.txt"]);
 
-    // Renamed elsewhere while shown: the window follows.
+    // A second tab; renaming the folder the first one shows moves both.
+    let t2 = b.open_tab(Loc::Dir(dir.clone()), true);
+    assert!(Rc::ptr_eq(&b.pane(), &t2));
+    assert!(b.notebook.shows_tabs());
+    wait_for("tab listed", || names(&t2) == ["a", "sub"]);
     let a = dir.join("a");
-    b.request_then(Request::Rename { path: a.clone(), new_name: "a2".into() }, |_, _| {});
-    wait_for("followed the rename", || b.here() == dir.join("a2") && names(&b) == ["b.txt"]);
-    assert_eq!(b.state.borrow().back.last(), Some(&dir), "history kept, not extended");
+    t2.request_then(Request::Rename { path: a.clone(), new_name: "a2".into() }, |_, _| {});
+    wait_for("followed the rename", || p.here() == dir.join("a2") && names(&p) == ["b.txt"]);
+    assert_eq!(p.state.borrow().back.last(), Some(&Loc::Dir(dir.clone())), "history kept, not extended");
+    wait_for("other tab relisted", || names(&t2).contains(&"a2".to_owned()));
+    b.close_tab(&t2);
+    assert!(!b.notebook.shows_tabs());
+    assert!(Rc::ptr_eq(&b.pane(), &p));
+
+    // Trash: listed with where it came from, restored from there.
+    p.select_only(&dir.join("a2/b.txt"));
+    p.trash();
+    wait_for("trashed", || names(&p).is_empty());
+    p.load(Loc::Trash, Nav::New);
+    // The new folder undone above is there too.
+    wait_for("trash listed", || names(&p).contains(&"b.txt".to_owned()));
+    assert_eq!(names(&p).len(), 2);
+    assert_eq!(b.path_bar.text(), "Trash");
+    let pos = names(&p).iter().position(|n| n == "b.txt").unwrap() as u32;
+    let trashed = entry_of(&p.selection.item(pos).unwrap()).path.clone();
+    assert!(p.cells.caption(&trashed).is_some_and(|c| c.starts_with("from ")));
+    p.select_only(&trashed);
+    assert!(b.item_menu(&p).n_items() == 2, "Restore / Delete permanently");
+    p.restore();
+    wait_for("restored", || names(&p) == ["New folder"] && dir.join("a2/b.txt").exists());
+    p.go_up();
+    wait_for("up from the Trash", || p.loc() == Loc::Dir(dir.join("a2")));
+
+    // Recent keeps daemon order; leaving it restores the folder sort.
+    p.load(Loc::Recent(None), Nav::New);
+    wait_for("recent", || p.loc() == Loc::Recent(None));
+    assert!(p.list.sorter.primary_sort_column().is_none());
+    p.go_back();
+    wait_for("back to the folder", || p.loc() == Loc::Dir(dir.join("a2")));
+    assert!(p.list.sorter.primary_sort_column().is_some());
 
     // Hidden files.
     std::fs::write(dir.join("a2/.h"), "").unwrap();
-    wait_for("hidden file listed", || b.store.n_items() == 2);
-    assert_eq!(names(&b), ["b.txt"]);
+    wait_for("hidden file listed", || p.store.n_items() == 2);
+    assert_eq!(names(&p), ["b.txt"]);
     action(&b, "win.show-hidden", None);
-    assert_eq!(names(&b).len(), 2);
+    assert_eq!(names(&p).len(), 2);
 
     // Views and zoom.
     action(&b, "win.view", Some(&"grid".to_variant()));
-    assert!(b.mode.get() == ViewMode::Grid);
-    assert_eq!(b.views.visible_child_name().as_deref(), Some("grid"));
+    assert!(p.mode.get() == ViewMode::Grid);
+    assert_eq!(p.root.visible_child_name().as_deref(), Some("grid"));
     action(&b, "win.zoom-in", None);
-    assert_eq!(b.cells.grid_zoom.get(), GRID_ZOOM + 1);
+    assert_eq!(p.cells.grid_zoom.get(), GRID_ZOOM + 1);
     action(&b, "win.zoom-reset", None);
-    assert_eq!(b.cells.grid_zoom.get(), GRID_ZOOM);
+    assert_eq!(p.cells.grid_zoom.get(), GRID_ZOOM);
 
     // Menus for a file and for the background build.
-    b.select_only(&dir.join("a2/b.txt"));
-    assert!(b.item_menu().n_items() >= 4);
-    b.selection.unselect_all();
-    assert!(b.background_menu().n_items() >= 3);
+    p.select_only(&dir.join("a2/b.txt"));
+    assert!(b.item_menu(&p).n_items() >= 4);
+    p.selection.unselect_all();
+    assert!(b.background_menu(&p).n_items() >= 3);
 
     b.window.destroy();
 }

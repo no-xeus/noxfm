@@ -3,6 +3,7 @@
 
 pub mod apps;
 pub mod complete;
+pub mod devices;
 pub mod filetype;
 pub mod fmt;
 pub mod fskind;

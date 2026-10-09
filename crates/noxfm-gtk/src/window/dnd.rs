@@ -12,14 +12,14 @@ use gtk::prelude::*;
 use gtk::{gdk, gio};
 use noxfm_proto::{EntryKind, TransferOp};
 
-use super::Browser;
 use super::ops::drop_op;
+use super::pane::{Loc, Pane};
 
 fn paths(files: &gdk::FileList) -> Vec<PathBuf> {
     files.files().iter().filter_map(|f| f.path()).collect()
 }
 
-impl Browser {
+impl Pane {
     pub(super) fn connect_dnd(self: &Rc<Self>, view: &gtk::Widget) {
         let source = gtk::DragSource::new();
         source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
@@ -55,6 +55,12 @@ impl Browser {
         let (weak, v) = (Rc::downgrade(self), view.clone());
         target.connect_motion(move |t, x, y| {
             let Some(b) = weak.upgrade() else { return gdk::DragAction::empty() };
+            match b.loc() {
+                // Dropping on the Trash view trashes.
+                Loc::Trash => return gdk::DragAction::MOVE,
+                Loc::Recent(_) => return gdk::DragAction::empty(),
+                Loc::Dir(_) => {}
+            }
             let dest = b.drop_dest(&v, x, y);
             b.cells.set_drop_hover(Some(dest.clone()).filter(|d| *d != b.here()));
             let sources = t.value().and_then(|v| v.get::<gdk::FileList>().ok()).map(|f| paths(&f));
@@ -76,6 +82,14 @@ impl Browser {
             b.cells.set_drop_hover(None);
             let Ok(files) = value.get::<gdk::FileList>() else { return false };
             let sources = paths(&files);
+            match b.loc() {
+                Loc::Trash => {
+                    b.fire(noxfm_proto::Request::Trash { paths: sources });
+                    return true;
+                }
+                Loc::Recent(_) => return false,
+                Loc::Dir(_) => {}
+            }
             let dest = b.drop_dest(&v, x, y);
             let op = match action(&sources, &dest, ctrl(t)) {
                 a if a == gdk::DragAction::MOVE => TransferOp::Move,

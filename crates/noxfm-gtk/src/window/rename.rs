@@ -7,9 +7,9 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 use noxfm_proto::{Request, Response};
 
-use super::Browser;
+use super::pane::Pane;
 
-impl Browser {
+impl Pane {
     /// F2 / "Rename": Enter or clicking away commits, Escape cancels.
     pub(super) fn start_rename(self: &Rc<Self>, path: PathBuf) {
         let Some(e) = self.entry(&path) else { return };
@@ -77,13 +77,5 @@ impl Browser {
         // The name without its extension, as other file managers do.
         let stem = if is_dir { name.len() } else { name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len()) };
         entry.select_region(0, name[..stem].chars().count() as i32);
-    }
-
-    pub(super) fn apply_pending_select(&self) {
-        let pending = self.pending_select.borrow().clone();
-        if let Some(p) = pending.filter(|p| self.position_of(p).is_some()) {
-            self.pending_select.take();
-            self.select_only(&p);
-        }
     }
 }

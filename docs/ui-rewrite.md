@@ -69,9 +69,12 @@ When the GTK window reaches parity, it takes the binary name `noxfm` and
    folder/file/template, trash, delete, undo, compress/extract, send to.
    Recent and Trash menus come with those views (phase 4); "Open with ▸
    Other application…" and Properties with phase 5.
-4. **Navigation.** Tabs (with detach to a new window), history per tab,
-   sidebar (Recent, Places, Pinned, Devices; folding, resizing), Recent and
-   Trash views, mounting and mount policies.
+4. ✅ **Navigation.** Tabs (reorder by dragging; dragged out of the bar, a
+   tab opens in its own window; middle click on a folder opens a tab, on a
+   tab closes it), history per tab, sidebar (Recent, Places, Pinned,
+   disks; folding shared through noxd, resizable, F9), Recent (newest first)
+   and Trash views with their menus, mounting, mount rules, "mount this?"
+   banners. Disk and partition Properties come with phase 5.
 5. **Panels.** Properties (files, folders, partitions, disks), preview panel,
    transfers, app picker and other dialogs, health banner.
 6. **Switch.** Rename binary, delete `crates/noxfm` and the libcosmic patch,

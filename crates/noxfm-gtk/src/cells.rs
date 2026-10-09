@@ -57,6 +57,9 @@ pub struct Cells {
     cut: RefCell<HashSet<PathBuf>>,
     /// Folder a drag hovers, highlighted as the drop target.
     drop_hover: RefCell<Option<PathBuf>>,
+    /// A line under the name, by path (why an item is in Recent, where a
+    /// trashed one came from).
+    captions: RefCell<HashMap<PathBuf, String>>,
 }
 
 /// Icon opacity of cut items.
@@ -75,6 +78,7 @@ impl Cells {
             owners: RefCell::default(),
             cut: RefCell::default(),
             drop_hover: RefCell::default(),
+            captions: RefCell::default(),
         })
     }
 
@@ -158,6 +162,14 @@ impl Cells {
     /// name cell or the tile), to anchor a popover to.
     pub fn anchor(&self, path: &Path) -> Option<gtk::Widget> {
         live(&self.icons, path).into_iter().next().and_then(|i| i.parent())
+    }
+
+    pub fn set_captions(&self, captions: HashMap<PathBuf, String>) {
+        *self.captions.borrow_mut() = captions;
+    }
+
+    pub fn caption(&self, path: &Path) -> Option<String> {
+        self.captions.borrow().get(path).cloned()
     }
 
     #[cfg(test)]

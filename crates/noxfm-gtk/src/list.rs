@@ -89,6 +89,11 @@ impl ListView {
         (key, self.sorter.primary_sort_order() == gtk::SortType::Ascending)
     }
 
+    /// Daemon order (Recent: newest first) until a column is clicked.
+    pub fn unsort(&self) {
+        self.view.sort_by_column(None, gtk::SortType::Ascending);
+    }
+
     pub fn sorted_by_size(&self) -> bool {
         self.sorter.primary_sort_column().as_ref() == Some(&self.size)
     }
@@ -150,6 +155,10 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.append(&gtk::Image::new());
         row.append(&label());
+        let caption = label();
+        caption.add_css_class("caption");
+        caption.add_css_class("dim-label");
+        row.append(&caption);
         item.downcast_ref::<gtk::ListItem>().unwrap().set_child(Some(&row));
     });
     let c = cells.clone();
@@ -161,6 +170,10 @@ fn name_factory(cells: &Rc<Cells>) -> gtk::SignalListItemFactory {
         image.set_pixel_size(c.list_px());
         c.bind_icon(&image, &e);
         label.set_text(&e.name);
+        let caption = label.next_sibling().and_downcast::<gtk::Label>().unwrap();
+        let text = c.caption(&e.path);
+        caption.set_visible(text.is_some());
+        caption.set_text(text.as_deref().unwrap_or_default());
         c.own(&item.child().unwrap(), &e.path);
     });
     let c = cells.clone();

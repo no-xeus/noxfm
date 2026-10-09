@@ -25,8 +25,16 @@ fn main() -> anyhow::Result<glib::ExitCode> {
 
     let mut args = std::env::args_os().skip(1).peekable();
     args.next_if(|a| a == "--window");
-    // `--recent`, `--trash` and the sidebar layout come with the sidebar (phase 4).
-    while args.next_if(|a| a.to_str().is_some_and(|s| s.starts_with("--"))).is_some() {}
+    // Window options, in any order, before the path.
+    let (mut view, mut layout) = (None, None);
+    while let Some(a) = args.next_if(|a| a.to_str().is_some_and(|s| s.starts_with("--"))) {
+        let a = a.to_string_lossy();
+        if let Some(v) = noxfm_proto::StartView::from_arg(&a) {
+            view = Some(v);
+        } else if let Some(l) = noxfm_proto::WindowLayout::from_arg(&a) {
+            layout = Some(l);
+        }
+    }
     let start = match args.next() {
         Some(p) => std::fs::canonicalize(&p).with_context(|| format!("{}", std::path::Path::new(&p).display()))?,
         None => std::env::current_dir()?,
@@ -40,7 +48,7 @@ fn main() -> anyhow::Result<glib::ExitCode> {
         .build();
     window::set_accels(&app);
     app.connect_activate(move |app| {
-        window::Browser::open(app, daemon.clone(), conn.clone(), start.clone());
+        window::Browser::open(app, daemon.clone(), conn.clone(), window::start_loc(view, start.clone()), layout);
     });
     // Arguments were handled above; GApplication would reject ours.
     Ok(app.run_with_args::<&str>(&[]))

@@ -1,4 +1,4 @@
-//! File operations on the selection or the shown folder, run by noxd.
+//! File operations on a tab's selection or folder, run by noxd.
 
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
@@ -9,18 +9,14 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 use noxfm_proto::{Entry, EntryKind, NewKind, Request, Response, TransferOp};
 
-use super::{Browser, Nav};
+use super::pane::{Loc, Nav, Pane};
 use crate::cells::entry_of;
 use crate::clipboard;
 
 /// Files opened at once by "Open" on a multi-selection, at most.
 const OPEN_MAX: usize = 20;
 
-impl Browser {
-    pub(super) fn here(&self) -> PathBuf {
-        self.state.borrow().path.clone()
-    }
-
+impl Pane {
     /// Selected entries, in view order.
     pub(super) fn selected_entries(&self) -> Vec<Entry> {
         let set = self.selection.selection();
@@ -50,33 +46,13 @@ impl Browser {
         }
     }
 
-    /// A short note in the status line (until the next listing).
-    pub(super) fn notify(&self, msg: impl Into<String>) {
-        self.state.borrow_mut().notice = Some(msg.into());
-        self.update_status();
-    }
-
-    /// Sends `req`; `then` gets the reply (errors are shown by default).
-    pub(super) fn request_then(self: &Rc<Self>, req: Request, then: impl FnOnce(&Rc<Self>, Response) + 'static) {
-        let weak = Rc::downgrade(self);
-        let daemon = self.daemon.clone();
-        glib::spawn_future_local(async move {
-            let reply = daemon.request(req).await;
-            let Some(this) = weak.upgrade() else { return };
-            match reply {
-                Ok(r) => then(&this, r),
-                Err(e) => this.fail(e),
-            }
-        });
-    }
-
     /// Enter or "Open": one folder opens in place; files with their apps.
     pub(super) fn open_selection(self: &Rc<Self>) {
         let sel = self.selected_entries();
         if let [e] = sel.as_slice()
             && e.kind == EntryKind::Dir
         {
-            self.load(e.path.clone(), Nav::New);
+            self.load(Loc::Dir(e.path.clone()), Nav::New);
             return;
         }
         for e in sel.into_iter().filter(|e| e.kind != EntryKind::Dir).take(OPEN_MAX) {
@@ -91,29 +67,27 @@ impl Browser {
         }
     }
 
-    pub(super) fn to_clipboard(&self, op: TransferOp) {
+    pub(super) fn to_clipboard(self: &Rc<Self>, op: TransferOp) {
         let paths = self.selected_list();
-        if paths.is_empty() {
+        if paths.is_empty() || self.loc() == Loc::Trash {
             return;
         }
-        clipboard::write(&self.window.clipboard(), op, &paths);
-        let cut = if op == TransferOp::Move { paths.iter().cloned().collect() } else { HashSet::new() };
-        self.cells.set_cut(cut);
+        let b = self.browser();
+        clipboard::write(&b.window.clipboard(), op, &paths);
+        let cut: HashSet<PathBuf> = if op == TransferOp::Move { paths.iter().cloned().collect() } else { HashSet::new() };
+        b.set_cut(cut);
         let n = paths.len();
         let verb = if op == TransferOp::Move { "Cut" } else { "Copied" };
         self.notify(format!("{verb} {n} item{}", if n == 1 { "" } else { "s" }));
     }
 
-    /// Another app (or window) owns the clipboard now: nothing is cut here.
-    pub(super) fn clipboard_changed(&self, clipboard: &gdk::Clipboard) {
-        if !clipboard.is_local() {
-            self.cells.set_cut(HashSet::new());
-        }
-    }
-
     pub(super) fn paste(self: &Rc<Self>, as_link: bool) {
+        if !self.in_folder() {
+            self.notify("Open a folder to paste into");
+            return;
+        }
         let weak = Rc::downgrade(self);
-        let clip = self.window.clipboard();
+        let clip = self.browser().window.clipboard();
         glib::spawn_future_local(async move {
             let found = clipboard::read(&clip).await;
             let Some(this) = weak.upgrade() else { return };
@@ -129,20 +103,20 @@ impl Browser {
             if op == TransferOp::Move {
                 // A cut is pasted once, as in other file managers.
                 clip.set_content(None::<&gdk::ContentProvider>).ok();
-                this.cells.set_cut(HashSet::new());
+                this.browser().set_cut(HashSet::new());
             }
             this.transfer(op, paths, here);
         });
     }
 
-    pub(super) fn copy_paths(&self) {
+    pub(super) fn copy_paths(self: &Rc<Self>) {
         let paths = self.selected_list();
         let text = if paths.is_empty() {
             self.here().display().to_string()
         } else {
             paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")
         };
-        self.window.clipboard().set_text(&text);
+        self.browser().window.clipboard().set_text(&text);
         self.notify(if paths.len() > 1 { "Paths copied" } else { "Path copied" });
     }
 
@@ -155,62 +129,47 @@ impl Browser {
         self.fire(Request::Transfer { op, sources, dest });
     }
 
-    /// Where "Send to ▸" copies: Desktop, Documents, mounted removable drives.
-    pub(super) fn send_targets(&self) -> Vec<(String, PathBuf)> {
-        let mut out: Vec<(String, PathBuf)> = self
-            .places
-            .borrow()
-            .iter()
-            .filter(|p| !p.pinned && matches!(p.name.as_str(), "Desktop" | "Documents"))
-            .map(|p| (p.name.clone(), p.path.clone()))
-            .collect();
-        for d in self.devices.borrow().iter().filter(|d| !d.internal) {
-            if let Some(m) = &d.mount_point {
-                let name = match (&d.label, d.partition) {
-                    (Some(l), _) => l.clone(),
-                    (None, Some(n)) => format!("Partition {n}"),
-                    (None, None) => d.device.rsplit('/').next().unwrap_or(&d.device).to_owned(),
-                };
-                out.push((name, m.clone()));
-            }
-        }
-        out
-    }
-
     pub(super) fn send_to(self: &Rc<Self>, i: usize) {
-        if let Some((_, dest)) = self.send_targets().into_iter().nth(i) {
+        if let Some((_, dest)) = self.browser().send_targets().into_iter().nth(i) {
             self.transfer(TransferOp::Copy, self.selected_list(), dest);
         }
     }
 
     pub(super) fn compress(self: &Rc<Self>) {
         let sources = self.selected_list();
-        if !sources.is_empty() {
+        if !sources.is_empty() && self.in_folder() {
             self.fire(Request::Compress { sources, dest_dir: self.here() });
         }
     }
 
     pub(super) fn extract(self: &Rc<Self>) {
         if let [e] = self.selected_entries().as_slice() {
-            self.fire(Request::Extract { zip: e.path.clone(), dest_dir: self.here() });
+            let dest_dir = e.path.parent().map_or_else(|| self.here(), Path::to_path_buf);
+            self.fire(Request::Extract { zip: e.path.clone(), dest_dir });
         }
     }
 
     pub(super) fn create_link(self: &Rc<Self>) {
         let targets = self.selected_list();
-        if !targets.is_empty() {
+        if !targets.is_empty() && self.in_folder() {
             self.fire(Request::Symlink { targets, dir: self.here() });
         }
     }
 
     pub(super) fn trash(self: &Rc<Self>) {
         let paths = self.selected_list();
-        if !paths.is_empty() {
+        if !paths.is_empty() && self.loc() != Loc::Trash {
             self.fire(Request::Trash { paths });
         }
     }
 
-    /// After asking: there's no undo for this.
+    /// Trash ids of the selected trashed items.
+    fn selected_trash_ids(&self) -> Vec<String> {
+        let st = self.state.borrow();
+        self.selected_list().iter().filter_map(|p| st.trash.get(p)).map(|t| t.id.clone()).collect()
+    }
+
+    /// After asking: there's no undo for this. In the Trash: purges.
     pub(super) fn delete_forever(self: &Rc<Self>) {
         let paths = self.selected_list();
         let what = match paths.as_slice() {
@@ -218,23 +177,63 @@ impl Browser {
             [one] => format!("“{}”", one.file_name().unwrap_or_default().to_string_lossy()),
             many => format!("these {} items", many.len()),
         };
+        let req = if self.loc() == Loc::Trash {
+            Request::PurgeTrash { ids: self.selected_trash_ids() }
+        } else {
+            Request::DeleteForever { paths }
+        };
+        self.confirm(&format!("Delete {what} permanently?"), "They won't go to the Trash, and this can't be undone.", "Delete", req);
+    }
+
+    pub(super) fn empty_trash(self: &Rc<Self>) {
+        let n = self.store.n_items();
+        if n > 0 {
+            let detail = format!("All {n} item{} in the Trash will be deleted for good.", if n == 1 { "" } else { "s" });
+            self.confirm("Empty the Trash?", &detail, "Empty Trash", Request::EmptyTrash);
+        }
+    }
+
+    pub(super) fn restore(self: &Rc<Self>) {
+        let ids = self.selected_trash_ids();
+        if !ids.is_empty() {
+            self.fire(Request::RestoreTrash { ids });
+        }
+    }
+
+    fn confirm(self: &Rc<Self>, message: &str, detail: &str, action: &str, req: Request) {
         let dialog = gtk::AlertDialog::builder()
             .modal(true)
-            .message(format!("Delete {what} permanently?"))
-            .detail("They won't go to the Trash, and this can't be undone.")
-            .buttons(["Cancel", "Delete"])
+            .message(message)
+            .detail(detail)
+            .buttons(["Cancel", action])
             .cancel_button(0)
             .default_button(0)
             .build();
         let weak = Rc::downgrade(self);
-        let window = self.window.clone();
+        let window = self.browser().window.clone();
         glib::spawn_future_local(async move {
             if dialog.choose_future(Some(&window)).await == Ok(1)
                 && let Some(this) = weak.upgrade()
             {
-                this.fire(Request::DeleteForever { paths });
+                this.fire(req);
             }
         });
+    }
+
+    pub(super) fn forget_recent(self: &Rc<Self>) {
+        for path in self.selected_list() {
+            self.fire(Request::ForgetRecent { path });
+        }
+    }
+
+    /// From Recent: the item's folder, with the item selected.
+    pub(super) fn open_location(self: &Rc<Self>) {
+        if let [e] = self.selected_entries().as_slice()
+            && let Some(parent) = e.path.parent()
+        {
+            *self.pending_select.borrow_mut() = Some(e.path.clone());
+            self.load(Loc::Dir(parent.to_path_buf()), Nav::New);
+        }
     }
 
     pub(super) fn undo(self: &Rc<Self>) {
@@ -247,6 +246,9 @@ impl Browser {
 
     /// The new item is renamed in place as soon as it shows up.
     pub(super) fn create(self: &Rc<Self>, kind: NewKind) {
+        if !self.in_folder() {
+            return;
+        }
         self.request_then(Request::Create { dir: self.here(), kind }, |this, r| {
             if let Response::Path(p) = r {
                 *this.pending_rename.borrow_mut() = Some(p);
@@ -265,6 +267,14 @@ impl Browser {
         }
     }
 
+    pub(super) fn apply_pending_select(&self) {
+        let pending = self.pending_select.borrow().clone();
+        if let Some(p) = pending.filter(|p| self.position_of(p).is_some()) {
+            self.pending_select.take();
+            self.select_only(&p);
+        }
+    }
+
     /// The single selected folder, or the shown one.
     pub(super) fn target_dir(&self) -> PathBuf {
         match self.selected_entries().as_slice() {
@@ -278,16 +288,16 @@ impl Browser {
         self.fire(if pin { Request::Pin { path } } else { Request::Unpin { path } });
     }
 
-    pub(super) fn is_pinned(&self, path: &Path) -> bool {
-        self.places.borrow().iter().any(|p| p.pinned && p.path == path)
-    }
-
     pub(super) fn open_terminal(self: &Rc<Self>) {
         self.fire(Request::OpenTerminal { dir: self.target_dir() });
     }
 
-    pub(super) fn open_new_window(self: &Rc<Self>) {
-        self.fire(Request::OpenWindow { path: Some(self.target_dir()), view: None, layout: None });
+    /// The selected folder (or this place) in another window or tab.
+    pub(super) fn target_loc(&self) -> Loc {
+        match self.selected_entries().as_slice() {
+            [e] if e.kind == EntryKind::Dir => Loc::Dir(e.path.clone()),
+            _ => self.loc(),
+        }
     }
 
     /// Asks for "Open with ▸" apps of the selected file's type, then runs `then`.
